@@ -103,10 +103,10 @@ dependencies {
     // R8 + isShrinkResources strip every unreferenced icon at build time,
     // so the APK only contains the icons actually used.
     implementation("androidx.compose.material:material-icons-extended")
-    // 3.0.0 is the first stable release that ships ColorSpec.SpecVersion.SPEC_2025
-    // and is published to Maven Central. (4.x does not exist; 5.0.0 is latest but
-    // dropped the specVersion param — use 3.0.0 to keep AppTheme.kt API-compatible.)
-    implementation("com.materialkolor:material-kolor:3.0.0")
+    // 3.0.1 is the first stable GA release that ships ColorSpec.SpecVersion.SPEC_2025
+    // on Maven Central (3.0.0 was alpha/beta-only; 3.0.1 released Jul 24 2025).
+    // specVersion API is unchanged from the pre-releases so AppTheme.kt needs no edits.
+    implementation("com.materialkolor:material-kolor:3.0.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
