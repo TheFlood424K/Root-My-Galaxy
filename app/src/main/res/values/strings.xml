@@ -266,7 +266,7 @@
     <string name="updater_button_download">Download</string>
     <string name="updater_downloading">Downloading update…</string>
     <string name="updater_download_failed">Failed to download update.</string>
-    <string name="updater_failed">Update check failed.</button>
+    <string name="updater_failed">Update check failed.</string>
 
     <!-- Notification channel (BootInstallService) -->
     <string name="notification_channel_boot">Boot Install</string>
