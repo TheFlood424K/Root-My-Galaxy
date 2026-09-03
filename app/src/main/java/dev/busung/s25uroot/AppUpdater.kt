@@ -25,21 +25,66 @@ object AppUpdater {
     private const val GITHUB_API = "https://api.github.com/repos/TheFlood424K/Root-My-Galaxy"
     private const val RELEASES_PAGE = "$ROOT_MY_GALAXY_URL/releases/latest"
 
+    /** Fetches the latest *stable* release (for production builds). */
     suspend fun fetchLatestRelease(): UpdateInfo? = withContext(Dispatchers.IO) {
-        try {
-            val connection = URL("$GITHUB_API/releases/latest").openConnection() as HttpURLConnection
+        fetchReleaseByTag("latest")
+    }
+
+    /**
+     * Fetches the rolling [ci-latest] pre-release.
+     *
+     * The quick-build workflow publishes a pre-release tagged [ci-latest] after
+     * every successful CI build and attaches a stable-named APK asset
+     * (root-my-galaxy-ci.apk).  Because the CI variant uses
+     * applicationId = dev.busung.s25uroot.ci and is always signed with the
+     * same debug keystore, the system installer will accept an upgrade
+     * in-place without an uninstall.
+     *
+     * Version comparison is done on the run number embedded in the release
+     * title ("CI build #<N>") against [BuildConfig.CI_RUN_NUMBER].
+     */
+    suspend fun fetchLatestCiBuild(): UpdateInfo? = withContext(Dispatchers.IO) {
+        fetchReleaseByTag("ci-latest")
+    }
+
+    /** Returns true when the installed CI build is older than [latest]. */
+    fun isCiUpdateAvailable(latest: UpdateInfo): Boolean {
+        val latestRun = runNumberFromVersionName(latest.versionName) ?: return false
+        val currentRun = runNumberFromVersionName(BuildConfig.VERSION_NAME) ?: return false
+        return latestRun > currentRun
+    }
+
+    /** Extracts the numeric run number from a version string like "0.2.67-ci+42" or "CI build #42". */
+    private fun runNumberFromVersionName(name: String): Int? {
+        // Matches "-ci+42" or "#42" at the end of the string.
+        val match = Regex("(?:ci\\+(\\d+)|#(\\d+))").find(name) ?: return null
+        return (match.groupValues[1].takeIf { it.isNotEmpty() }
+            ?: match.groupValues[2]).toIntOrNull()
+    }
+
+    private fun fetchReleaseByTag(tag: String): UpdateInfo? {
+        val url = if (tag == "latest") "$GITHUB_API/releases/latest"
+                  else "$GITHUB_API/releases/tags/$tag"
+        return try {
+            val connection = URL(url).openConnection() as HttpURLConnection
             try {
                 connection.requestMethod = "GET"
                 connection.setRequestProperty("User-Agent", "RootMyGalaxy/${BuildConfig.VERSION_NAME}")
                 connection.setRequestProperty("Accept", "application/vnd.github+json")
                 connection.connectTimeout = 10_000
                 connection.readTimeout = 10_000
-                if (connection.responseCode != HttpURLConnection.HTTP_OK) return@withContext null
+                if (connection.responseCode != HttpURLConnection.HTTP_OK) return null
                 val body = connection.inputStream.bufferedReader().use { it.readText() }
 
                 val json = JSONObject(body)
-                val tag = json.optString("tag_name").trim().removePrefix("v")
-                if (tag.isBlank()) return@withContext null
+                val rawTag = json.optString("tag_name").trim()
+                // For ci-latest the "version" is the release title (e.g. "CI build #42").
+                val versionName = if (rawTag == "ci-latest")
+                    json.optString("name").trim()
+                else
+                    rawTag.removePrefix("v")
+                if (versionName.isBlank()) return null
+
                 var apkUrl: String? = null
                 json.optJSONArray("assets")?.let { assets ->
                     for (i in 0 until assets.length()) {
@@ -51,7 +96,7 @@ object AppUpdater {
                     }
                 }
                 UpdateInfo(
-                    versionName = tag,
+                    versionName = versionName,
                     apkUrl = apkUrl,
                     releaseUrl = json.optString("html_url").ifEmpty { RELEASES_PAGE },
                 )

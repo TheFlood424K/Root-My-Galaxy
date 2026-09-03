@@ -6,6 +6,10 @@ name: Quick Build
 # The CI variant (applicationId dev.busung.s25uroot.ci) is signed with the
 # debug keystore and installs as a separate app, so every build can be
 # installed over the previous one without an uninstall.
+#
+# After a successful build the APK is also attached to a rolling
+# "ci-latest" pre-release so AppUpdater can detect and download it
+# in-app without requiring a manual uninstall.
 
 on:
   push:
@@ -24,6 +28,8 @@ jobs:
     name: Quick Build
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
@@ -72,8 +78,6 @@ jobs:
       - name: Build CI APK
         env:
           JAVA_TOOL_OPTIONS: "-XX:+UseSerialGC"
-          # Injected into build.gradle.kts so versionNameSuffix = "-ci+<run>"
-          # and BuildConfig.CI_RUN_NUMBER is set correctly.
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
         run: |
           ./gradlew assembleCi \
@@ -83,10 +87,44 @@ jobs:
             --no-daemon \
             --console=plain
 
-      - name: Upload CI APK
+      - name: Upload CI APK (artifact)
         uses: actions/upload-artifact@v6
         with:
           name: app-ci-${{ github.run_number }}
           path: app/build/outputs/apk/ci/*.apk
           if-no-files-found: error
           retention-days: 7
+
+      - name: Publish rolling ci-latest pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_NUMBER: ${{ github.run_number }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          APK_PATH="$(ls app/build/outputs/apk/ci/*.apk | head -n 1)"
+          # Rename to a stable filename so the in-app updater always finds
+          # the same asset name regardless of the build variant suffix.
+          DEST="app/build/outputs/apk/ci/root-my-galaxy-ci.apk"
+          cp "$APK_PATH" "$DEST"
+
+          # Move the ci-latest tag to HEAD so the release tracks the latest commit.
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -f ci-latest "$SHA"
+          git push origin refs/tags/ci-latest --force
+
+          NOTES="CI build #${RUN_NUMBER}\nCommit: ${SHA}"
+
+          if gh release view ci-latest >/dev/null 2>&1; then
+            gh release edit ci-latest \
+              --title "CI build #${RUN_NUMBER}" \
+              --notes "$NOTES" \
+              --prerelease
+            gh release upload ci-latest "$DEST" --clobber
+          else
+            gh release create ci-latest "$DEST" \
+              --title "CI build #${RUN_NUMBER}" \
+              --notes "$NOTES" \
+              --prerelease
+          fi
