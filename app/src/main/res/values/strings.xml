@@ -35,6 +35,11 @@
     <string name="install_confirm_body">This will install KernelSU on your device. Proceed?</string>
     <string name="install_confirm_source">Source: %1$s</string>
 
+    <!-- Install confirm dialog aliases (used in InstallConfirmDialog composable) -->
+    <string name="dialog_install_title">Confirm Installation</string>
+    <string name="dialog_install_message">Install KernelSU for &#8220;%1$s&#8221;?</string>
+    <string name="dialog_install_confirm">Install</string>
+
     <!-- Install screen (InstallActivity / InstallViewModel) -->
     <string name="install_title">Installing KernelSU</string>
     <string name="install_preparing">Preparing…</string>
@@ -185,6 +190,7 @@
 
     <!-- History -->
     <string name="history_title">History</string>
+    <string name="history_empty">No installation history yet.</string>
     <string name="history_empty_title">No history yet</string>
     <string name="history_empty_description">Completed installations will appear here.</string>
     <string name="history_detail_title">Installation Detail</string>
@@ -193,10 +199,12 @@
     <string name="history_payload">Payload</string>
     <string name="history_started">Started</string>
     <string name="history_completed">Completed</string>
+    <string name="history_success">Success</string>
     <string name="history_succeeded">Succeeded</string>
     <string name="history_failed">Failed</string>
     <string name="history_running">Running</string>
     <string name="history_delete">Delete</string>
+    <string name="history_delete_all">Delete All</string>
     <string name="history_delete_selected">Delete Selected</string>
     <string name="history_select_all">Select All</string>
     <string name="history_clear_selection">Clear Selection</string>
@@ -205,6 +213,7 @@
 
     <!-- Settings -->
     <string name="settings">Settings</string>
+    <string name="settings_general">General</string>
     <string name="advanced">Advanced</string>
     <string name="advanced_mode">Advanced Mode</string>
     <string name="advanced_mode_description">Enable additional options for experienced users.</string>

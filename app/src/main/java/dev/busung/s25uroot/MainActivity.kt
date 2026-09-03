@@ -152,8 +152,12 @@ fun MainScreen(viewModel: InstallViewModel) {
                 val shizukuMode   by viewModel.shizukuMode.collectAsStateWithLifecycle()
                 val autoReroot    by viewModel.autoReroot.collectAsStateWithLifecycle()
                 val localPayload  by viewModel.localPayloadMode.collectAsStateWithLifecycle()
-                val accentColor   by viewModel.accentColor.collectAsStateWithLifecycle()
-                val themeMode     by viewModel.themeMode.collectAsStateWithLifecycle()
+                // viewModel exposes accentColor / themeMode as String (stored-value form).
+                // SettingsScreen takes the typed enums, so convert here.
+                val accentColorStr by viewModel.accentColor.collectAsStateWithLifecycle()
+                val themeModeStr   by viewModel.themeMode.collectAsStateWithLifecycle()
+                val accentColorEnum = AccentColor.fromStoredValue(accentColorStr)
+                val themeModeEnum   = AppThemeMode.fromStoredValue(themeModeStr)
                 SettingsScreen(
                     advancedMode = advancedMode,
                     onAdvancedModeChange = { viewModel.setAdvancedMode(it) },
@@ -163,10 +167,10 @@ fun MainScreen(viewModel: InstallViewModel) {
                     onAutoRerootChange = { viewModel.setAutoReroot(it) },
                     localPayloadMode = localPayload,
                     onLocalPayloadModeChange = { viewModel.setLocalPayloadMode(it) },
-                    accentColor = accentColor,
-                    onAccentColorChange = { viewModel.setAccentColor(it) },
-                    themeMode = themeMode,
-                    onThemeModeChange = { viewModel.setThemeMode(it) },
+                    accentColor = accentColorEnum,
+                    onAccentColorChange = { viewModel.setAccentColor(it.storedValue) },
+                    themeMode = themeModeEnum,
+                    onThemeModeChange = { viewModel.setThemeMode(it.storedValue) },
                 )
             }
         }
@@ -389,14 +393,14 @@ fun OverviewScreen(
             Spacer(Modifier.height(4.dp))
         }
 
-        // ── Sticky progress + action card (always in viewport) ────────────
+        // ── Sticky progress + action card (always in viewport) ────────────────────
         StickyProgressCard(
             uiState = uiState,
             onStartRoot = onStartRoot,
             onStopSession = onStopSession,
         )
 
-        // ── Log panel — fills remaining vertical space, scrollable inside ─
+        // ── Log panel — fills remaining vertical space, scrollable inside ─────
         if (uiState.log.isNotBlank()) {
             Spacer(Modifier.height(8.dp))
             LogPanel(
@@ -1018,6 +1022,17 @@ fun HistoryScreen(
 fun HistoryEntryCard(entry: InstallHistoryEntry, onDelete: () -> Unit) {
     var logExpanded by remember { mutableStateOf(false) }
 
+    // Derive display values from the actual InstallHistoryEntry fields.
+    // InstallHistoryEntry has: id, startedAtMillis, completedAtMillis,
+    //                          result (InstallRunResult), log, profileId, usedShizuku.
+    // It does NOT have profileName, timestamp, or success fields.
+    val displayName = entry.profileId ?: "(unknown profile)"
+    val displayTime = remember(entry.startedAtMillis) {
+        SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+            .format(Date(entry.startedAtMillis))
+    }
+    val succeeded = entry.result == InstallRunResult.Succeeded
+
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -1030,14 +1045,14 @@ fun HistoryEntryCard(entry: InstallHistoryEntry, onDelete: () -> Unit) {
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = entry.profileName,
+                        text = displayName,
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        text = entry.timestamp,
+                        text = displayTime,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1047,7 +1062,7 @@ fun HistoryEntryCard(entry: InstallHistoryEntry, onDelete: () -> Unit) {
                         onClick = {},
                         label = {
                             Text(
-                                text = if (entry.success)
+                                text = if (succeeded)
                                     stringResource(R.string.history_success)
                                 else
                                     stringResource(R.string.history_failed),
@@ -1055,11 +1070,11 @@ fun HistoryEntryCard(entry: InstallHistoryEntry, onDelete: () -> Unit) {
                             )
                         },
                         colors = AssistChipDefaults.assistChipColors(
-                            containerColor = if (entry.success)
+                            containerColor = if (succeeded)
                                 MaterialTheme.colorScheme.primaryContainer
                             else
                                 MaterialTheme.colorScheme.errorContainer,
-                            labelColor = if (entry.success)
+                            labelColor = if (succeeded)
                                 MaterialTheme.colorScheme.onPrimaryContainer
                             else
                                 MaterialTheme.colorScheme.onErrorContainer,
