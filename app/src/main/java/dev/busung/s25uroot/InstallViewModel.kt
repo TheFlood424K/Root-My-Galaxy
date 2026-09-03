@@ -314,6 +314,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     private val mutableAutoReroot       = MutableStateFlow(AppPreferences.autoReroot(app))
     private val mutableLocalPayloadMode = MutableStateFlow(AppPreferences.localPayloadMode(app))
     private val mutableDebugLog         = MutableStateFlow(AppPreferences.debugLog(app))
+    private val mutableUpdateChannel    = MutableStateFlow(AppPreferences.updateChannel(app))
 
     private var discoveryJob: Job? = null
     private var installJob: Job? = null
@@ -339,6 +340,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     val autoReroot: StateFlow<Boolean>       = mutableAutoReroot.asStateFlow()
     val localPayloadMode: StateFlow<Boolean> = mutableLocalPayloadMode.asStateFlow()
     val debugLog: StateFlow<Boolean>         = mutableDebugLog.asStateFlow()
+    val updateChannel: StateFlow<UpdateChannel> = mutableUpdateChannel.asStateFlow()
 
     val state: StateFlow<InstallUiState>          = uiState
     val history: StateFlow<List<InstallHistoryEntry>> = installHistory
@@ -389,6 +391,11 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     fun setAutoReroot(enabled: Boolean)       { AppPreferences.setAutoReroot(app, enabled);       mutableAutoReroot.value = enabled }
     fun setLocalPayloadMode(enabled: Boolean) { AppPreferences.setLocalPayloadMode(app, enabled); mutableLocalPayloadMode.value = enabled }
     fun setDebugLog(enabled: Boolean)         { AppPreferences.setDebugLog(app, enabled);         mutableDebugLog.value = enabled }
+
+    fun setUpdateChannel(channel: UpdateChannel) {
+        AppPreferences.setUpdateChannel(app, channel)
+        mutableUpdateChannel.value = channel
+    }
 
     fun setAccentColor(color: String) {
         val enum = AccentColor.fromStoredValue(color)
@@ -944,253 +951,3 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
             error(app.getString(R.string.error_receipt))
         }
     }
-
-    private fun currentBootToken(): String? = runCatching {
-        File("/proc/sys/kernel/random/boot_id").readText(Charsets.UTF_8).trim()
-    }.getOrElse { null }
-
-    private fun cachedP0Offset(bootToken: String?): String? {
-        if (bootToken == null) return null
-        val prefs = app.getSharedPreferences(P0_OFFSET_PREFS, android.content.Context.MODE_PRIVATE)
-        val stored = prefs.getString(bootToken, null) ?: return null
-        return stored.takeIf { it.matches(Regex("[0-9a-fx]+")) }
-    }
-
-    private fun cacheP0Offset(bootToken: String?, rawLog: String) {
-        if (bootToken == null) return
-        val match = P0_OFFSET_PATTERN.find(rawLog) ?: return
-        val offset = match.groupValues[1]
-        app.getSharedPreferences(P0_OFFSET_PREFS, android.content.Context.MODE_PRIVATE)
-            .edit().putString(bootToken, offset).apply()
-    }
-
-    // -----------------------------------------------------------------------
-    // History helpers
-    // -----------------------------------------------------------------------
-
-    private fun startHistory() {
-        val entry = historyStore.create()
-        activeHistoryEntry = entry
-        publishHistory(entry)
-    }
-
-    private fun updateHistory(transform: (InstallHistoryEntry) -> InstallHistoryEntry) {
-        val entry   = activeHistoryEntry ?: return
-        val updated = transform(entry)
-        activeHistoryEntry = updated
-        historyStore.save(updated)
-        publishHistory(updated)
-    }
-
-    private fun updateHistoryLog()                     = updateHistory { it.copy(log = mutableUiState.value.log) }
-    private fun updateHistoryProfile(profileId: String) = updateHistory { it.copy(profileId = profileId) }
-
-    private fun finishHistory(result: InstallRunResult) = updateHistory {
-        it.copy(completedAtMillis = System.currentTimeMillis(), result = result, log = mutableUiState.value.log)
-    }
-
-    private fun publishHistory(entry: InstallHistoryEntry) {
-        mutableHistory.value = buildList {
-            add(entry)
-            addAll(mutableHistory.value.filter { it.id != entry.id })
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // State helpers
-    // -----------------------------------------------------------------------
-
-    private fun setPhase(phase: InstallPhase, message: String, progress: Float? = null) {
-        val pct = progress?.let { (it.coerceIn(0f, 1f) * 100f).roundToInt() }
-        mutableUiState.value = mutableUiState.value.copy(
-            phase         = phase,
-            statusMessage = message,
-            progress      = progress?.coerceIn(0f, 1f),
-            progressLabel = pct?.let { "$it %" },
-        )
-        updateHistoryLog()
-    }
-
-    private fun appendLog(line: String) {
-        val current = mutableUiState.value.log
-        val lines   = current.lines()
-        val trimmed = if (lines.size >= MAX_LOG_LINES) lines.takeLast(MAX_LOG_LINES - 1).joinToString("\n") else current
-        mutableUiState.value = mutableUiState.value.copy(
-            log = if (trimmed.isEmpty()) line else "$trimmed\n$line",
-        )
-        updateHistoryLog()
-    }
-
-    private fun debugLog(line: String) {
-        Log.d(TAG, line)
-        if (mutableDebugLog.value) appendLog(line)
-    }
-
-    private fun error(message: String): Nothing = throw IllegalStateException(message)
-
-    private fun shouldRebootUserspace(): Boolean =
-        activeRunRebootUserspace == true ||
-            (activeRunRebootUserspace == null && AppPreferences.rebootAfterInstall(app))
-
-    // -----------------------------------------------------------------------
-    // Native helpers
-    // -----------------------------------------------------------------------
-
-    private fun helperFile(): File =
-        File(app.applicationInfo.nativeLibraryDir, "libcve43499root.so").also {
-            require(it.exists()) { app.getString(R.string.error_helper_unavailable) }
-        }
-
-    private fun nativeHelperFile() = File(app.applicationInfo.nativeLibraryDir, "libcve43499root.so")
-
-    private fun shizukuEnabled(): Boolean = activeRunShizuku ?: AppPreferences.shizukuMode(app)
-
-    private fun shizukuStage(source: File, target: String, mode: String): File {
-        val result = ShizukuController.exec(arrayOf("cp", source.absolutePath, target)).waitFor()
-        require(result == 0) {
-            app.getString(R.string.error_shizuku_stage, source.name, "cp → $target exited $result")
-        }
-        ShizukuController.exec(arrayOf("chmod", mode, target)).waitFor()
-        return File(target)
-    }
-
-    /**
-     * Runs the native helper with the given [arguments] and returns a
-     * [CommandResult] containing the exit code, stripped output, and — when
-     * the exit code is non-zero — a full [ProcessDiagnostics] bundle.
-     *
-     * The diagnostics are always written to [debugLog] regardless of whether
-     * the Debug Log setting is enabled, so they appear in logcat.  Callers
-     * that surface errors in the UI can append
-     * `result.diagnostics?.format()` to their error messages so the same
-     * rich exit/signal/stderr/linker/fingerprint block that exploit failures
-     * already show is also visible for KSU installation failures.
-     */
-    private suspend fun runHelper(vararg arguments: String): CommandResult =
-        withContext(Dispatchers.IO) {
-            val helper = helperFile()
-            debugLog("[DBG] runHelper: ${listOf(helper.name) + arguments.toList()}")
-            val process = if (shizukuEnabled()) {
-                ShizukuController.exec(arrayOf(helper.absolutePath) + arguments)
-            } else {
-                ProcessBuilder(listOf(helper.absolutePath) + arguments)
-                    .redirectErrorStream(true)
-                    .start()
-            }
-            val captured  = StringBuilder()
-            val startedAt = SystemClock.elapsedRealtime()
-            try {
-                while (process.isAlive) {
-                    drainProcessOutput(process, captured)
-                    require(SystemClock.elapsedRealtime() - startedAt < HELPER_TIMEOUT_MILLIS) {
-                        app.getString(
-                            R.string.error_helper_timeout,
-                            captured.toString().trim().takeIf(String::isNotBlank)?.let { ": $it" } ?: "",
-                        )
-                    }
-                    delay(HELPER_POLL_INTERVAL)
-                }
-                drainProcessOutput(process, captured)
-                val output = stripAnsi(captured.toString().trim())
-                val code   = process.waitFor()
-                // Collect diagnostics on failure and attach to the result so
-                // callers can surface them in the UI without needing Debug Log.
-                val diagnostics = if (code != 0) {
-                    val diag = ProcessDiagnostics.collect(process, captured, ::stripAnsi)
-                    debugLog("[DBG] runHelper exit=$code\n${diag.format()}")
-                    diag
-                } else {
-                    null
-                }
-                CommandResult(code, output, diagnostics)
-            } finally {
-                killProcess(process)
-            }
-        }
-
-    private fun shellQuote(value: String) = "'${value.replace("'", "'\\''")}'"
-
-    // -----------------------------------------------------------------------
-    // Public misc
-    // -----------------------------------------------------------------------
-
-    fun refresh()            { mutableHistory.value = historyStore.closeInterruptedRuns() }
-    fun loadTargetCatalog()  = startDiscovery()
-
-    fun deleteHistoryEntries(ids: Set<String>) {
-        ids.forEach { historyStore.delete(it) }
-        mutableHistory.value = historyStore.load()
-    }
-
-    fun cancel() {
-        installJob?.cancel()
-        installJob = null
-        if (mutableUiState.value.busy) {
-            mutableUiState.value = mutableUiState.value.copy(
-                phase         = InstallPhase.Failed,
-                statusMessage = "Installation cancelled",
-                progress      = null,
-                progressLabel = null,
-            )
-        }
-    }
-
-    fun clearError() {
-        if (mutableUiState.value.phase == InstallPhase.Failed) {
-            mutableUiState.value = mutableUiState.value.copy(
-                phase         = InstallPhase.Ready,
-                statusMessage = "",
-                progress      = null,
-                progressLabel = null,
-            )
-        }
-    }
-
-    private fun stripAnsi(text: String): String =
-        text.replace(Regex("\u001B\\[[0-9;]*[mGKHF]"), "")
-
-    private fun File.readTextIfPresent(): String =
-        if (exists()) runCatching { readText(Charsets.UTF_8) }.getOrDefault("") else ""
-
-    // -----------------------------------------------------------------------
-    // Constants
-    // -----------------------------------------------------------------------
-
-    companion object {
-        private const val TAG = "InstallViewModel"
-
-        internal const val PAYLOAD_EXPLOIT  = "exploit"
-        internal const val PAYLOAD_KERNELSU = "kernelsu"
-        internal const val LOCAL_PROFILE_ID = "__local__"
-
-        private const val INSTALL_RECEIPT   = "install_receipt"
-        private const val RECEIPT_BOOT_TOKEN = "boot_token"
-        private const val RECEIPT_VERIFIED  = "verified"
-
-        private const val P0_OFFSET_PREFS   = "p0_offset_cache"
-        private const val P0_OFFSET_ENV     = "CVE43499_P0_OFFSET"
-        private val P0_OFFSET_PATTERN       = Regex("""p0_offset=([0-9a-fx]+)""")
-
-        private const val SHIZUKU_LOG_PATH      = "/data/local/tmp/ksu-exploit.log"
-        private const val SHIZUKU_HELPER_PATH   = "/data/local/tmp/ksu-helper"
-        private const val SHIZUKU_PAYLOAD_PATH  = "/data/local/tmp/ksu-payload"
-        private const val SHIZUKU_KSUD_PATH     = "/data/local/tmp/ksud-s25u-kdp"
-        private const val SHIZUKU_KSUD_STAGE_PATH = "/data/local/tmp/.ksud-stage"
-
-        private const val EXPLOIT_ATTEMPTS          = "6"
-        private const val P0_ATTEMPT_TIMEOUT_SEC    = "18"
-        private const val EXPLOIT_ATTEMPT_TIMEOUT_SEC = "90"
-
-        private val EXPLOIT_STALL_MILLIS  : Long = 30.seconds.inWholeMilliseconds
-        private val EXPLOIT_TOTAL_MILLIS  : Long = 10.minutes.inWholeMilliseconds
-        private val HELPER_TIMEOUT_MILLIS : Long = 60.seconds.inWholeMilliseconds
-        private val LOG_POLL_INTERVAL     : Long = 500.milliseconds.inWholeMilliseconds
-        private val HELPER_POLL_INTERVAL  : Long = 100.milliseconds.inWholeMilliseconds
-
-        private const val MAX_LOG_LINES    = 200
-        private const val MAX_DRAIN_BYTES  = 65_536
-        private const val EXPLOIT_PULSE_STEP = 0.002f
-    }
-}
-
-private class ExploitStallException(message: String) : Exception(message)

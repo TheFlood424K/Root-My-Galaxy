@@ -148,16 +148,16 @@ fun MainScreen(viewModel: InstallViewModel) {
                 )
             }
             composable("settings") {
-                val advancedMode  by viewModel.advancedMode.collectAsStateWithLifecycle()
-                val shizukuMode   by viewModel.shizukuMode.collectAsStateWithLifecycle()
-                val autoReroot    by viewModel.autoReroot.collectAsStateWithLifecycle()
-                val localPayload  by viewModel.localPayloadMode.collectAsStateWithLifecycle()
-                // FIX: collect debugLog state and wire it into SettingsScreen
-                val debugLog      by viewModel.debugLog.collectAsStateWithLifecycle()
-                val accentColorStr by viewModel.accentColor.collectAsStateWithLifecycle()
-                val themeModeStr   by viewModel.themeMode.collectAsStateWithLifecycle()
-                val accentColorEnum = AccentColor.fromStoredValue(accentColorStr)
-                val themeModeEnum   = AppThemeMode.fromStoredValue(themeModeStr)
+                val advancedMode    by viewModel.advancedMode.collectAsStateWithLifecycle()
+                val shizukuMode     by viewModel.shizukuMode.collectAsStateWithLifecycle()
+                val autoReroot      by viewModel.autoReroot.collectAsStateWithLifecycle()
+                val localPayload    by viewModel.localPayloadMode.collectAsStateWithLifecycle()
+                val debugLog        by viewModel.debugLog.collectAsStateWithLifecycle()
+                val updateChannel   by viewModel.updateChannel.collectAsStateWithLifecycle()
+                val accentColorStr  by viewModel.accentColor.collectAsStateWithLifecycle()
+                val themeModeStr    by viewModel.themeMode.collectAsStateWithLifecycle()
+                val accentColorEnum  = AccentColor.fromStoredValue(accentColorStr)
+                val themeModeEnum    = AppThemeMode.fromStoredValue(themeModeStr)
                 SettingsScreen(
                     advancedMode = advancedMode,
                     onAdvancedModeChange = { viewModel.setAdvancedMode(it) },
@@ -169,6 +169,8 @@ fun MainScreen(viewModel: InstallViewModel) {
                     onLocalPayloadModeChange = { viewModel.setLocalPayloadMode(it) },
                     debugLog = debugLog,
                     onDebugLogChange = { viewModel.setDebugLog(it) },
+                    updateChannel = updateChannel,
+                    onUpdateChannelChange = { viewModel.setUpdateChannel(it) },
                     accentColor = accentColorEnum,
                     onAccentColorChange = { viewModel.setAccentColor(it.storedValue) },
                     themeMode = themeModeEnum,
@@ -587,8 +589,6 @@ fun LogPanel(
                 }
             }
 
-            // FIX: wrap divider + LazyColumn in a single Column so
-            // AnimatedVisibility has exactly one direct child.
             AnimatedVisibility(
                 visible = expanded,
                 enter = fadeIn() + expandVertically(),
@@ -1161,9 +1161,10 @@ fun SettingsScreen(
     onAutoRerootChange: (Boolean) -> Unit,
     localPayloadMode: Boolean,
     onLocalPayloadModeChange: (Boolean) -> Unit,
-    // FIX: new debugLog parameters
     debugLog: Boolean,
     onDebugLogChange: (Boolean) -> Unit,
+    updateChannel: UpdateChannel,
+    onUpdateChannelChange: (UpdateChannel) -> Unit,
     accentColor: AccentColor,
     onAccentColorChange: (AccentColor) -> Unit,
     themeMode: AppThemeMode,
@@ -1197,7 +1198,6 @@ fun SettingsScreen(
                 onCheckedChange = onAutoRerootChange,
             )
         }
-        // FIX: Debug Log toggle now appears in Settings under General
         item {
             SwitchPreference(
                 title = stringResource(R.string.debug_log),
@@ -1209,6 +1209,20 @@ fun SettingsScreen(
         item {
             HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
         }
+        // ── Advanced section ────────────────────────────────────────────────
+        item {
+            SectionHeader(title = stringResource(R.string.settings_advanced), icon = Icons.Rounded.Build)
+        }
+        item {
+            UpdateChannelPicker(
+                selected = updateChannel,
+                onSelect = onUpdateChannelChange,
+            )
+        }
+        item {
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+        }
+        // ── Local payload ───────────────────────────────────────────────────
         item {
             SectionHeader(title = stringResource(R.string.local_payload_card_title), icon = Icons.Rounded.FolderOpen)
         }
@@ -1223,6 +1237,7 @@ fun SettingsScreen(
         item {
             HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
         }
+        // ── Appearance ──────────────────────────────────────────────────────
         item {
             SectionHeader(title = stringResource(R.string.appearance), icon = Icons.Rounded.Palette)
         }
@@ -1266,6 +1281,72 @@ fun SettingsScreen(
                 ThemePicker(
                     selected = themeMode,
                     onSelect = onThemeModeChange,
+                )
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// UpdateChannelPicker
+// ---------------------------------------------------------------------------
+
+/**
+ * Segmented button row that lets the user choose between the stable Release
+ * channel and the rolling Debug (CI) channel, matching the style of
+ * [ThemePicker].
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun UpdateChannelPicker(
+    selected: UpdateChannel,
+    onSelect: (UpdateChannel) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .padding(bottom = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = stringResource(R.string.update_channel),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+        )
+        Text(
+            text = stringResource(R.string.update_channel_description),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        val options = UpdateChannel.entries
+        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            options.forEachIndexed { index, channel ->
+                SegmentedButton(
+                    selected = channel == selected,
+                    onClick  = { onSelect(channel) },
+                    shape    = SegmentedButtonDefaults.itemShape(index = index, count = options.size),
+                    label = {
+                        Text(
+                            text = when (channel) {
+                                UpdateChannel.Release -> stringResource(R.string.update_channel_release)
+                                UpdateChannel.Debug   -> stringResource(R.string.update_channel_debug)
+                            },
+                        )
+                    },
+                    icon = {
+                        SegmentedButtonDefaults.Icon(active = channel == selected) {
+                            Icon(
+                                imageVector = when (channel) {
+                                    UpdateChannel.Release -> Icons.Rounded.NewReleases
+                                    UpdateChannel.Debug   -> Icons.Rounded.BugReport
+                                },
+                                contentDescription = null,
+                                modifier = Modifier.size(SegmentedButtonDefaults.IconSize),
+                            )
+                        }
+                    },
                 )
             }
         }
