@@ -82,7 +82,21 @@ data class TargetCatalogUiState(
     val error: String? = null,
 )
 
-private data class CommandResult(val code: Int, val output: String)
+/**
+ * Result returned by [InstallViewModel.runHelper].
+ *
+ * @param code        Process exit code.
+ * @param output      Stripped stdout/stderr captured during the run.
+ * @param diagnostics Full [ProcessDiagnostics] bundle, non-null only when
+ *                    [code] != 0.  Callers can append [ProcessDiagnostics.format]
+ *                    to their error messages to surface the same rich block
+ *                    that exploit failures already show in the UI.
+ */
+private data class CommandResult(
+    val code: Int,
+    val output: String,
+    val diagnostics: ProcessDiagnostics? = null,
+)
 
 // ---------------------------------------------------------------------------
 // ProcessDiagnostics
@@ -183,10 +197,10 @@ data class ProcessDiagnostics(
         /**
          * Collects diagnostics from a process that has already exited.
          *
-         * @param process    The dead [Process] object.
+         * @param process         The dead [Process] object.
          * @param capturedOutput  Everything already drained from the process
-         *                   stdout/stderr stream into a [StringBuilder].
-         * @param stripAnsi  Function to strip ANSI escape codes.
+         *                        stdout/stderr stream into a [StringBuilder].
+         * @param stripAnsi       Function to strip ANSI escape codes.
          */
         fun collect(
             process: Process,
@@ -207,9 +221,11 @@ data class ProcessDiagnostics(
             val exitCode = runCatching { process.waitFor() }.getOrDefault(-1)
 
             // Read the exit signal from /proc/<pid>/stat via JNI.
-            // Process.pid() is available from API 26; our minSdk is 33.
+            // Process.toHandle().pid() returns the PID as Long; our minSdk is 33
+            // so ProcessHandle is guaranteed available.
             val signal = runCatching {
-                NativeProbe.getProcessSignal(process.pid())
+                val pid = process.toHandle().pid().toInt()
+                NativeProbe.getProcessSignal(pid)
             }.getOrDefault(-1).let { if (it < 0) 0 else it }
 
             val rawOutput = stripAnsi(capturedOutput.toString())
@@ -854,7 +870,10 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         if (stage.code != 0) {
             val out = stage.output.trim().takeIf(String::isNotBlank)
             debugLog("[DBG] ksud stage output: ${out ?: "(empty)"}")
-            throw IllegalStateException(app.getString(R.string.error_ksu_stage, out ?: "exit code ${stage.code}"))
+            val diagSuffix = stage.diagnostics?.let { "\n" + it.format() } ?: ""
+            throw IllegalStateException(
+                app.getString(R.string.error_ksu_stage, out ?: "exit code ${stage.code}") + diagSuffix
+            )
         }
         appendLog(app.getString(R.string.log_ksu_staged))
 
@@ -863,7 +882,10 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         if (lateLoad.code != 0) {
             val out = lateLoad.output.trim().takeIf(String::isNotBlank)
             debugLog("[DBG] late-load output: ${out ?: "(empty)"}")
-            throw IllegalStateException(app.getString(R.string.error_ksu_verify, lateLoad.code, out ?: ""))
+            val diagSuffix = lateLoad.diagnostics?.let { "\n" + it.format() } ?: ""
+            throw IllegalStateException(
+                app.getString(R.string.error_ksu_verify, lateLoad.code, out ?: "") + diagSuffix
+            )
         }
 
         val libksudPath = app.applicationInfo.nativeLibraryDir + "/libksud.so"
@@ -872,7 +894,10 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         if (verify.code != 0) {
             val out = verify.output.trim().takeIf(String::isNotBlank)
             debugLog("[DBG] verify output: ${out ?: "(empty)"}")
-            throw IllegalStateException(app.getString(R.string.error_ksu_verify, verify.code, out ?: ""))
+            val diagSuffix = verify.diagnostics?.let { "\n" + it.format() } ?: ""
+            throw IllegalStateException(
+                app.getString(R.string.error_ksu_verify, verify.code, out ?: "") + diagSuffix
+            )
         }
         appendLog(app.getString(R.string.log_ksu_control_verified))
     }
@@ -1017,6 +1042,18 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         return File(target)
     }
 
+    /**
+     * Runs the native helper with the given [arguments] and returns a
+     * [CommandResult] containing the exit code, stripped output, and — when
+     * the exit code is non-zero — a full [ProcessDiagnostics] bundle.
+     *
+     * The diagnostics are always written to [debugLog] regardless of whether
+     * the Debug Log setting is enabled, so they appear in logcat.  Callers
+     * that surface errors in the UI can append
+     * `result.diagnostics?.format()` to their error messages so the same
+     * rich exit/signal/stderr/linker/fingerprint block that exploit failures
+     * already show is also visible for KSU installation failures.
+     */
     private suspend fun runHelper(vararg arguments: String): CommandResult =
         withContext(Dispatchers.IO) {
             val helper = helperFile()
@@ -1044,12 +1081,16 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 drainProcessOutput(process, captured)
                 val output = stripAnsi(captured.toString().trim())
                 val code   = process.waitFor()
-                if (code != 0) {
-                    // Collect full diagnostics and attach to the debug log.
+                // Collect diagnostics on failure and attach to the result so
+                // callers can surface them in the UI without needing Debug Log.
+                val diagnostics = if (code != 0) {
                     val diag = ProcessDiagnostics.collect(process, captured, ::stripAnsi)
                     debugLog("[DBG] runHelper exit=$code\n${diag.format()}")
+                    diag
+                } else {
+                    null
                 }
-                CommandResult(code, output)
+                CommandResult(code, output, diagnostics)
             } finally {
                 killProcess(process)
             }
