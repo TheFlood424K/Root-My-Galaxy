@@ -3,7 +3,7 @@
     <string name="app_name">Root My Galaxy</string>
 
     <!-- Navigation -->
-    <string name="nav_overview">Overview</string>
+    <string name="nav_overview">Home</string>
     <string name="nav_history">History</string>
     <string name="nav_settings">Settings</string>
 
@@ -251,6 +251,8 @@
 
     <!-- Export Log -->
     <string name="export_log">Export Log</string>
+    <string name="export_log_description">Save the current log to Downloads.</string>
+    <string name="export_log_share_title">Share log via…</string>
     <string name="export_log_saved">Log saved to %1$s</string>
     <string name="export_log_failed">Failed to export log.</string>
 
@@ -264,7 +266,7 @@
     <string name="updater_button_download">Download</string>
     <string name="updater_downloading">Downloading update…</string>
     <string name="updater_download_failed">Failed to download update.</string>
-    <string name="updater_failed">Update check failed.</string>
+    <string name="updater_failed">Update check failed.</button>
 
     <!-- Notification channel (BootInstallService) -->
     <string name="notification_channel_boot">Boot Install</string>

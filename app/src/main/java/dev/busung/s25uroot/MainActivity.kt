@@ -1,7 +1,11 @@
 package dev.busung.s25uroot
 
+import android.content.ContentValues
 import android.content.Intent
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -42,6 +46,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
@@ -49,6 +54,10 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import dev.busung.s25uroot.ui.theme.RootMyGalaxyTheme
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 // ---------------------------------------------------------------------------
 // Activity
@@ -196,6 +205,83 @@ fun BottomNavBar(navController: NavHostController) {
 }
 
 // ---------------------------------------------------------------------------
+// Log export helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Writes [log] to Downloads/RootMyGalaxy/ via MediaStore (API 29+), then
+ * fires a share Intent so the user can send it anywhere.  A Toast confirms
+ * the save path or reports failure.
+ *
+ * @param tag   Short label used in the filename, e.g. "home" or "history"
+ */
+fun exportLog(context: android.content.Context, log: String, tag: String = "log") {
+    val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+    val fileName  = "rmg_${tag}_$timestamp.txt"
+
+    runCatching {
+        // Write to Downloads/RootMyGalaxy/<fileName> via MediaStore
+        val resolver = context.contentResolver
+        val values   = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+            put(MediaStore.Downloads.MIME_TYPE,    "text/plain")
+            put(MediaStore.Downloads.RELATIVE_PATH,
+                Environment.DIRECTORY_DOWNLOADS + "/RootMyGalaxy")
+        }
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: error("MediaStore insert returned null")
+
+        resolver.openOutputStream(uri)?.use { it.write(log.toByteArray()) }
+            ?: error("openOutputStream returned null")
+
+        // Share intent so the user can also forward it immediately
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type        = "text/plain"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, fileName)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(
+            Intent.createChooser(shareIntent,
+                context.getString(R.string.export_log_share_title))
+        )
+
+        Toast.makeText(
+            context,
+            context.getString(R.string.export_log_saved,
+                "Downloads/RootMyGalaxy/$fileName"),
+            Toast.LENGTH_LONG,
+        ).show()
+    }.onFailure {
+        Toast.makeText(
+            context,
+            context.getString(R.string.export_log_failed),
+            Toast.LENGTH_SHORT,
+        ).show()
+    }
+}
+
+/**
+ * Compact icon button that calls [exportLog].  Placed inline in log panel
+ * headers and history entry footers.
+ */
+@Composable
+fun ExportLogButton(log: String, tag: String = "log", modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    IconButton(
+        onClick = { exportLog(context, log, tag) },
+        modifier = modifier,
+    ) {
+        Icon(
+            imageVector  = Icons.Rounded.FileDownload,
+            contentDescription = stringResource(R.string.export_log),
+            modifier     = Modifier.size(18.dp),
+            tint         = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Overview screen
 //
 // Layout:
@@ -317,6 +403,7 @@ fun OverviewScreen(
                 log = uiState.log,
                 expanded = logExpanded,
                 onToggle = { logExpanded = !logExpanded },
+                showExport = uiState.phase == InstallPhase.Failed,
                 modifier = if (logExpanded) Modifier.weight(1f) else Modifier,
             )
             Spacer(Modifier.height(12.dp))
@@ -445,6 +532,7 @@ fun LogPanel(
     log: String,
     expanded: Boolean,
     onToggle: () -> Unit,
+    showExport: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
@@ -469,11 +557,12 @@ fun LogPanel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable(onClick = onToggle)
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .padding(start = 12.dp, top = 10.dp, bottom = 10.dp, end = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Row(
+                    modifier = Modifier.weight(1f),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
@@ -495,12 +584,18 @@ fun LogPanel(
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                     )
                 }
-                Icon(
-                    imageVector = if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                    contentDescription = if (expanded) "Collapse log" else "Expand log",
-                    modifier = Modifier.size(18.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Export button — only visible on exploit failure
+                    if (showExport) {
+                        ExportLogButton(log = log, tag = "home")
+                    }
+                    Icon(
+                        imageVector = if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                        contentDescription = if (expanded) "Collapse log" else "Expand log",
+                        modifier = Modifier.size(18.dp).padding(end = 8.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
 
             // Log body — only rendered when expanded, scrolls internally
@@ -1035,11 +1130,23 @@ fun HistoryEntryItem(entry: InstallHistoryEntry, onDelete: () -> Unit) {
                 color = MaterialTheme.colorScheme.surfaceContainerHighest,
             ) {
                 Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        text = stringResource(R.string.history_log),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    // Log header row with export button
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = stringResource(R.string.history_log),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        ExportLogButton(
+                            log = entry.log,
+                            tag = "history_${entry.id}",
+                            modifier = Modifier.size(32.dp),
+                        )
+                    }
                     Text(
                         text = entry.log,
                         fontFamily = FontFamily.Monospace,
