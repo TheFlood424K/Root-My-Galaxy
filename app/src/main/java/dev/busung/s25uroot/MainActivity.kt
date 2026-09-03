@@ -152,8 +152,8 @@ fun MainScreen(viewModel: InstallViewModel) {
                 val shizukuMode   by viewModel.shizukuMode.collectAsStateWithLifecycle()
                 val autoReroot    by viewModel.autoReroot.collectAsStateWithLifecycle()
                 val localPayload  by viewModel.localPayloadMode.collectAsStateWithLifecycle()
-                // viewModel exposes accentColor / themeMode as String (stored-value form).
-                // SettingsScreen takes the typed enums, so convert here.
+                // FIX: collect debugLog state and wire it into SettingsScreen
+                val debugLog      by viewModel.debugLog.collectAsStateWithLifecycle()
                 val accentColorStr by viewModel.accentColor.collectAsStateWithLifecycle()
                 val themeModeStr   by viewModel.themeMode.collectAsStateWithLifecycle()
                 val accentColorEnum = AccentColor.fromStoredValue(accentColorStr)
@@ -167,6 +167,8 @@ fun MainScreen(viewModel: InstallViewModel) {
                     onAutoRerootChange = { viewModel.setAutoReroot(it) },
                     localPayloadMode = localPayload,
                     onLocalPayloadModeChange = { viewModel.setLocalPayloadMode(it) },
+                    debugLog = debugLog,
+                    onDebugLogChange = { viewModel.setDebugLog(it) },
                     accentColor = accentColorEnum,
                     onAccentColorChange = { viewModel.setAccentColor(it.storedValue) },
                     themeMode = themeModeEnum,
@@ -224,7 +226,6 @@ fun exportLog(context: android.content.Context, log: String, tag: String = "log"
     val fileName  = "rmg_${tag}_$timestamp.txt"
 
     runCatching {
-        // Write to Downloads/RootMyGalaxy/<fileName> via MediaStore
         val resolver = context.contentResolver
         val values   = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, fileName)
@@ -238,7 +239,6 @@ fun exportLog(context: android.content.Context, log: String, tag: String = "log"
         resolver.openOutputStream(uri)?.use { it.write(log.toByteArray()) }
             ?: error("openOutputStream returned null")
 
-        // Share intent so the user can also forward it immediately
         val shareIntent = Intent(Intent.ACTION_SEND).apply {
             type        = "text/plain"
             putExtra(Intent.EXTRA_STREAM, uri)
@@ -287,15 +287,6 @@ fun ExportLogButton(log: String, tag: String = "log", modifier: Modifier = Modif
 
 // ---------------------------------------------------------------------------
 // Overview screen
-//
-// Layout:
-//   Column (fillMaxSize)
-//   ├── scrollable top section (weight=0, intrinsic height)
-//   │     device card, ksu card, profile picker, steps card
-//   ├── sticky progress/action card (weight=0, always visible while busy)
-//   └── collapsible log panel (weight=1f when expanded, else 0)
-//
-// This guarantees the progress bar is never pushed off-screen by log output.
 // ---------------------------------------------------------------------------
 
 @Composable
@@ -309,8 +300,6 @@ fun OverviewScreen(
 ) {
     var showProfileSheet by remember { mutableStateOf(false) }
 
-    // Auto-expand log on failure so the user sees the error immediately.
-    // Collapse again whenever a new session starts (busy goes true).
     var logExpanded by remember { mutableStateOf(false) }
     LaunchedEffect(uiState.busy) {
         if (uiState.busy) logExpanded = false
@@ -325,7 +314,6 @@ fun OverviewScreen(
             .padding(horizontal = 16.dp),
     ) {
 
-        // ── Scrollable info cards (shrink-to-fit, never takes more than needed) ──
         Column(
             modifier = Modifier
                 .verticalScroll(rememberScrollState())
@@ -393,14 +381,12 @@ fun OverviewScreen(
             Spacer(Modifier.height(4.dp))
         }
 
-        // ── Sticky progress + action card (always in viewport) ────────────────────
         StickyProgressCard(
             uiState = uiState,
             onStartRoot = onStartRoot,
             onStopSession = onStopSession,
         )
 
-        // ── Log panel — fills remaining vertical space, scrollable inside ─────
         if (uiState.log.isNotBlank()) {
             Spacer(Modifier.height(8.dp))
             LogPanel(
@@ -453,7 +439,6 @@ fun StickyProgressCard(
                 .fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            // Status row: message + percentage
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -482,7 +467,6 @@ fun StickyProgressCard(
                 }
             }
 
-            // Progress bar — always rendered while busy or done
             when {
                 uiState.progress != null -> LinearProgressIndicator(
                     progress = { uiState.progress },
@@ -503,7 +487,6 @@ fun StickyProgressCard(
                 )
             }
 
-            // Action button
             when {
                 uiState.phase == InstallPhase.Done -> FilledTonalButton(
                     onClick = {},
@@ -542,7 +525,6 @@ fun LogPanel(
     val listState = rememberLazyListState()
     val lines = remember(log) { log.lines() }
 
-    // Auto-scroll to the latest line when new content arrives and panel is expanded
     LaunchedEffect(lines.size, expanded) {
         if (expanded && lines.isNotEmpty()) {
             listState.animateScrollToItem(lines.lastIndex)
@@ -556,7 +538,7 @@ fun LogPanel(
         ),
     ) {
         Column {
-            // Header row — always visible, tap to toggle
+            // Header — always visible, full-row tap target for toggling
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -588,48 +570,56 @@ fun LogPanel(
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                     )
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // Export button — only visible on exploit failure
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    // Prevent child row from intercepting the parent's clickable
+                    modifier = Modifier.padding(end = 4.dp),
+                ) {
                     if (showExport) {
                         ExportLogButton(log = log, tag = "home")
                     }
                     Icon(
                         imageVector = if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
                         contentDescription = if (expanded) "Collapse log" else "Expand log",
-                        modifier = Modifier.size(18.dp).padding(end = 8.dp),
+                        modifier = Modifier.size(20.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
 
-            // Log body — only rendered when expanded, scrolls internally
+            // FIX: wrap divider + LazyColumn in a single Column so
+            // AnimatedVisibility has exactly one direct child.
             AnimatedVisibility(
                 visible = expanded,
                 enter = fadeIn() + expandVertically(),
-                exit = fadeOut() + shrinkVertically(),
+                exit  = fadeOut() + shrinkVertically(),
             ) {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(1.dp),
-                ) {
-                    items(lines) { line ->
-                        Text(
-                            text = line,
-                            fontFamily = FontFamily.Monospace,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = when {
-                                line.startsWith("[!]") || line.startsWith("error", ignoreCase = true) ->
-                                    MaterialTheme.colorScheme.error
-                                line.startsWith("[+]") || line.startsWith("[*]") ->
-                                    MaterialTheme.colorScheme.primary
-                                else ->
-                                    MaterialTheme.colorScheme.onSurface
-                            },
-                        )
+                Column {
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                    )
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(1.dp),
+                    ) {
+                        items(lines) { line ->
+                            Text(
+                                text = line,
+                                fontFamily = FontFamily.Monospace,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = when {
+                                    line.startsWith("[!]") || line.startsWith("error", ignoreCase = true) ->
+                                        MaterialTheme.colorScheme.error
+                                    line.startsWith("[+]") || line.startsWith("[*]") ->
+                                        MaterialTheme.colorScheme.primary
+                                    else ->
+                                        MaterialTheme.colorScheme.onSurface
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -1022,10 +1012,6 @@ fun HistoryScreen(
 fun HistoryEntryCard(entry: InstallHistoryEntry, onDelete: () -> Unit) {
     var logExpanded by remember { mutableStateOf(false) }
 
-    // Derive display values from the actual InstallHistoryEntry fields.
-    // InstallHistoryEntry has: id, startedAtMillis, completedAtMillis,
-    //                          result (InstallRunResult), log, profileId, usedShizuku.
-    // It does NOT have profileName, timestamp, or success fields.
     val displayName = entry.profileId ?: "(unknown profile)"
     val displayTime = remember(entry.startedAtMillis) {
         SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
@@ -1175,6 +1161,9 @@ fun SettingsScreen(
     onAutoRerootChange: (Boolean) -> Unit,
     localPayloadMode: Boolean,
     onLocalPayloadModeChange: (Boolean) -> Unit,
+    // FIX: new debugLog parameters
+    debugLog: Boolean,
+    onDebugLogChange: (Boolean) -> Unit,
     accentColor: AccentColor,
     onAccentColorChange: (AccentColor) -> Unit,
     themeMode: AppThemeMode,
@@ -1206,6 +1195,15 @@ fun SettingsScreen(
                 subtitle = stringResource(R.string.settings_reboot_after_install_description),
                 checked = autoReroot,
                 onCheckedChange = onAutoRerootChange,
+            )
+        }
+        // FIX: Debug Log toggle now appears in Settings under General
+        item {
+            SwitchPreference(
+                title = stringResource(R.string.debug_log),
+                subtitle = stringResource(R.string.debug_log_description),
+                checked = debugLog,
+                onCheckedChange = onDebugLogChange,
             )
         }
         item {
@@ -1331,7 +1329,7 @@ fun SwitchPreference(
 }
 
 // ---------------------------------------------------------------------------
-// AccentColorPicker — horizontal scrolling swatch row
+// AccentColorPicker
 // ---------------------------------------------------------------------------
 
 @Composable
@@ -1396,7 +1394,7 @@ fun AccentColorPicker(
 }
 
 // ---------------------------------------------------------------------------
-// ThemePicker — segmented button: System / Light / Dark
+// ThemePicker
 // ---------------------------------------------------------------------------
 
 @OptIn(ExperimentalMaterial3Api::class)
