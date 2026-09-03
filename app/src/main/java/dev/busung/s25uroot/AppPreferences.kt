@@ -34,6 +34,27 @@ enum class AppThemeMode(val storedValue: String) {
     }
 }
 
+/**
+ * Controls which GitHub release channel the app checks for updates.
+ *
+ * [Release] (default) — checks the latest stable GitHub release via
+ *   `AppUpdater.fetchLatestRelease()`.
+ *
+ * [Debug] — checks the rolling `ci-latest` pre-release via
+ *   `AppUpdater.fetchLatestCiBuild()`.  The CI variant is always signed with
+ *   the same debug keystore, so the system installer accepts in-place
+ *   upgrades without an uninstall.
+ */
+enum class UpdateChannel(val storedValue: String) {
+    Release("release"),
+    Debug("debug");
+
+    companion object {
+        fun fromStoredValue(value: String?): UpdateChannel =
+            entries.firstOrNull { it.storedValue == value } ?: Release
+    }
+}
+
 object AppPreferences {
     private const val PREFERENCES = "appearance"
     private const val ACCENT_COLOR = "accent_color"
@@ -45,6 +66,7 @@ object AppPreferences {
     private const val REBOOT_AFTER_INSTALL = "reboot_after_install"
     private const val CONSUMED_INSTALL_REQUEST = "consumed_install_request"
     private const val DEBUG_LOG = "debug_log"
+    private const val UPDATE_CHANNEL = "update_channel"
 
     fun accentColor(context: Context): AccentColor = AccentColor.fromStoredValue(
         prefs(context).getString(ACCENT_COLOR, null),
@@ -123,6 +145,20 @@ object AppPreferences {
     fun setDebugLog(context: Context, enabled: Boolean) {
         prefs(context).edit()
             .putBoolean(DEBUG_LOG, enabled)
+            .apply()
+    }
+
+    /**
+     * Returns the currently stored [UpdateChannel].  Defaults to [UpdateChannel.Release]
+     * if no value has been saved yet.
+     */
+    fun updateChannel(context: Context): UpdateChannel = UpdateChannel.fromStoredValue(
+        prefs(context).getString(UPDATE_CHANNEL, null),
+    )
+
+    fun setUpdateChannel(context: Context, channel: UpdateChannel) {
+        prefs(context).edit()
+            .putString(UPDATE_CHANNEL, channel.storedValue)
             .apply()
     }
 
