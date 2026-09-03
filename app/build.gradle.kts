@@ -11,8 +11,8 @@ android {
         applicationId = "dev.busung.s25uroot"
         minSdk = 33
         targetSdk = 36
-        versionCode = 13
-        versionName = "0.2.66"
+        versionCode = 14
+        versionName = "0.2.67"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
@@ -53,7 +53,7 @@ android {
         // The versionNameSuffix is stamped with the GitHub run number at build
         // time via the GITHUB_RUN_NUMBER environment variable injected by the
         // quick-build workflow, giving each artifact a unique display version
-        // (e.g. "0.2.66-ci+42").
+        // (e.g. "0.2.67-ci+42").
         create("ci") {
             initWith(getByName("release"))          // inherit R8 / shrink settings
             applicationIdSuffix = ".ci"

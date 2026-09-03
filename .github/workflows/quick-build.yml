@@ -79,7 +79,7 @@ jobs:
           ./gradlew assembleCi \
             --build-cache \
             --parallel \
-            --configuration-cache \
+            --no-configuration-cache \
             --no-daemon \
             --console=plain
 
