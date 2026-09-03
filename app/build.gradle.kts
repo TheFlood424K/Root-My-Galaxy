@@ -31,11 +31,10 @@ android {
 
     buildTypes {
         release {
-            // Sign with the debug keystore so CI can produce a complete,
-            // installable APK without needing signing secrets.
-            signingConfig = signingConfigs.getByName("debug")
-            // R8 full-mode (set in gradle.properties) + resource shrinking.
-            // Together these are the single biggest contributor to APK size.
+            // Production builds — must be signed with a release keystore.
+            // signingConfig is intentionally NOT set here so the build fails
+            // loudly if no signing secrets are configured, rather than silently
+            // shipping a debug-signed release APK.
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -43,16 +42,41 @@ android {
                 "proguard-rules.pro"
             )
         }
+
+        // ── CI build type ────────────────────────────────────────────────────
+        // Installs as a *separate* app (applicationId = dev.busung.s25uroot.ci)
+        // so the debug keystore signature never conflicts with a release build.
+        // Because the app-id is different, every subsequent CI build can be
+        // installed over the previous one with a plain `adb install -r` or
+        // a direct APK tap — no uninstall needed.
+        //
+        // The versionNameSuffix is stamped with the GitHub run number at build
+        // time via the GITHUB_RUN_NUMBER environment variable injected by the
+        // quick-build workflow, giving each artifact a unique display version
+        // (e.g. "0.2.66-ci+42").
+        create("ci") {
+            initWith(getByName("release"))          // inherit R8 / shrink settings
+            applicationIdSuffix = ".ci"
+            versionNameSuffix = "-ci+" + (System.getenv("GITHUB_RUN_NUMBER") ?: "local")
+            signingConfig = signingConfigs.getByName("debug")
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            // Embed the run number in BuildConfig so the app can surface it
+            // in the Settings → About screen.
+            buildConfigField(
+                "String",
+                "CI_RUN_NUMBER",
+                "\"" + (System.getenv("GITHUB_RUN_NUMBER") ?: "local") + "\""
+            )
+        }
     }
 
     lint {
-        // lintVitalRelease runs automatically during assembleRelease and blocks
-        // the build on any fatal lint issue. Disable it here so the quick-build
-        // workflow can produce an APK even when translations are ahead of the
-        // default locale. Lint still runs as a separate CI step via the full
-        // CI Build workflow.
         checkReleaseBuilds = false
-        // Baseline suppresses pre-existing issues so CI only fails on NEW errors.
         baseline = file("lint-baseline.xml")
     }
 
@@ -99,13 +123,7 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3:1.5.0-alpha24")
-    // Keep extended: all icons used in the app are extended-only.
-    // R8 + isShrinkResources strip every unreferenced icon at build time,
-    // so the APK only contains the icons actually used.
     implementation("androidx.compose.material:material-icons-extended")
-    // 3.0.1 is the first stable GA release that ships ColorSpec.SpecVersion.SPEC_2025
-    // on Maven Central (3.0.0 was alpha/beta-only; 3.0.1 released Jul 24 2025).
-    // specVersion API is unchanged from the pre-releases so AppTheme.kt needs no edits.
     implementation("com.materialkolor:material-kolor:3.0.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation("dev.rikka.shizuku:api:13.1.5")

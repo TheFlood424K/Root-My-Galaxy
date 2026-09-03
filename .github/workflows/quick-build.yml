@@ -1,7 +1,11 @@
 name: Quick Build
-# Produces a release APK as fast as possible. Intended for manual
+# Produces a CI APK as fast as possible. Intended for manual
 # on-demand builds and pushes to main. Maximises Gradle + SDK caching
 # and skips slow SDK Manager verification steps entirely.
+#
+# The CI variant (applicationId dev.busung.s25uroot.ci) is signed with the
+# debug keystore and installs as a separate app, so every build can be
+# installed over the previous one without an uninstall.
 
 on:
   push:
@@ -25,7 +29,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      # setup-java's built-in Gradle cache is a plain ~/.gradle/caches tar.
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
@@ -33,12 +36,10 @@ jobs:
           java-version: '21'
           cache: gradle
 
-      # ubuntu-latest pre-installs NDK 29 under $ANDROID_SDK_ROOT/ndk/.
-      # Point AGP straight at it: no download, no copy, no action overhead.
       - name: Export NDK env vars
         run: |
           NDK_PATH=$(ls -d "${ANDROID_SDK_ROOT}/ndk/"*/ 2>/dev/null | sort -V | tail -1)
-          NDK_PATH="${NDK_PATH%/}"  # strip trailing slash
+          NDK_PATH="${NDK_PATH%/}"
           if [[ -z "$NDK_PATH" || ! -d "$NDK_PATH" ]]; then
             echo "ERROR: No pre-installed NDK found under ${ANDROID_SDK_ROOT}/ndk/" >&2
             exit 1
@@ -47,8 +48,6 @@ jobs:
           echo "ANDROID_NDK_HOME=${NDK_PATH}" >> $GITHUB_ENV
           echo "ANDROID_NDK_ROOT=${NDK_PATH}" >> $GITHUB_ENV
 
-      # ubuntu-latest ships API 35 + build-tools 35.0.0 + cmake 3.22.1.
-      # compileSdk=37 needs android-37; only download what is genuinely missing.
       - name: Install missing SDK components
         run: |
           SDKMANAGER="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
@@ -63,8 +62,6 @@ jobs:
             echo "All required SDK components already present, skipping sdkmanager."
           fi
 
-      # Cache CMake/ninja build output keyed on native sources.
-      # On a warm cache ExternalNativeBuild is fully UP-TO-DATE.
       - name: Cache native build output
         uses: actions/cache@v5
         with:
@@ -72,23 +69,24 @@ jobs:
           key: native-arm64-${{ runner.os }}-${{ hashFiles('app/src/main/cpp/**', 'app/build.gradle.kts') }}
           restore-keys: native-arm64-${{ runner.os }}-
 
-      - name: Build release APK
+      - name: Build CI APK
         env:
-          # Serial GC beats G1/ZGC for short-lived --no-daemon processes.
           JAVA_TOOL_OPTIONS: "-XX:+UseSerialGC"
+          # Injected into build.gradle.kts so versionNameSuffix = "-ci+<run>"
+          # and BuildConfig.CI_RUN_NUMBER is set correctly.
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
         run: |
-          ./gradlew assembleRelease \
+          ./gradlew assembleCi \
             --build-cache \
             --parallel \
             --configuration-cache \
             --no-daemon \
             --console=plain
 
-      # v6 is the first release that sets 'runs.using: node24'.
-      - name: Upload release APK
+      - name: Upload CI APK
         uses: actions/upload-artifact@v6
         with:
-          name: app-quick-release-${{ github.run_number }}
-          path: app/build/outputs/apk/release/*.apk
+          name: app-ci-${{ github.run_number }}
+          path: app/build/outputs/apk/ci/*.apk
           if-no-files-found: error
           retention-days: 7
