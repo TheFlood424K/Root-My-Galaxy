@@ -195,6 +195,17 @@ data class ProcessDiagnostics(
         private const val MAX_STDERR_LINES = 20
 
         /**
+         * Returns the PID of [process] using reflection to call the Java 9
+         * [Process.pid] method.  This avoids a direct reference to
+         * [Process.toHandle] / [Process.pid], which are absent from Android's
+         * compile-time stubs even though they are present at runtime on
+         * API 26+ devices.  Returns -1 if the call fails for any reason.
+         */
+        private fun pidOf(process: Process): Int = runCatching {
+            (Process::class.java.getMethod("pid").invoke(process) as Long).toInt()
+        }.getOrDefault(-1)
+
+        /**
          * Collects diagnostics from a process that has already exited.
          *
          * @param process         The dead [Process] object.
@@ -221,11 +232,12 @@ data class ProcessDiagnostics(
             val exitCode = runCatching { process.waitFor() }.getOrDefault(-1)
 
             // Read the exit signal from /proc/<pid>/stat via JNI.
-            // Process.toHandle().pid() returns the PID as Long; our minSdk is 33
-            // so ProcessHandle is guaranteed available.
+            // Process.pid() is a Java 9 API not present in Android's android.jar
+            // compile stubs, so we invoke it via reflection to avoid a compile
+            // error while still benefiting from it at runtime on API 26+ devices.
             val signal = runCatching {
-                val pid = process.toHandle().pid().toInt()
-                NativeProbe.getProcessSignal(pid)
+                val pid = pidOf(process)
+                if (pid < 0) 0 else NativeProbe.getProcessSignal(pid)
             }.getOrDefault(-1).let { if (it < 0) 0 else it }
 
             val rawOutput = stripAnsi(capturedOutput.toString())
