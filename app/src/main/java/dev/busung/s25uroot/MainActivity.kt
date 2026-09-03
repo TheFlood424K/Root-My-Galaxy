@@ -417,7 +417,7 @@ fun DeviceCard(device: DeviceSnapshot, androidVersion: String, securityPatch: St
                 InfoRow(label = "Android", value = androidVersion)
             }
             if (securityPatch.isNotBlank()) {
-                InfoRow(label = stringResource(R.string.security_patch), value = securityPatch)
+                InfoRow(label = "Security Patch", value = securityPatch)
             }
             InfoRow(label = stringResource(R.string.system_abi), value = device.abi)
         }
@@ -464,7 +464,7 @@ fun KernelSuCard(isRooted: Boolean, kernelSuVersion: String?) {
                 Text(
                     text = when {
                         isRooted && kernelSuVersion != null ->
-                            stringResource(R.string.version_format, kernelSuVersion)
+                            stringResource(R.string.status_ksu_active_format, kernelSuVersion)
                         isRooted -> stringResource(R.string.phase_installed)
                         else -> stringResource(R.string.status_not_installed)
                     },
@@ -925,6 +925,8 @@ fun HistoryEntryItem(entry: InstallHistoryEntry, onDelete: () -> Unit) {
 
 // ---------------------------------------------------------------------------
 // Settings screen
+// SettingsScreen, AccentColorPicker, and ThemePicker all use String to match
+// the ViewModel's StateFlow<String> API. Enum conversion is done internally.
 // ---------------------------------------------------------------------------
 
 @Composable
@@ -937,10 +939,10 @@ fun SettingsScreen(
     onAutoRerootChange: (Boolean) -> Unit,
     localPayloadMode: Boolean,
     onLocalPayloadModeChange: (Boolean) -> Unit,
-    accentColor: AccentColor,
-    onAccentColorChange: (AccentColor) -> Unit,
-    themeMode: AppThemeMode,
-    onThemeModeChange: (AppThemeMode) -> Unit,
+    accentColor: String,
+    onAccentColorChange: (String) -> Unit,
+    themeMode: String,
+    onThemeModeChange: (String) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -1027,7 +1029,7 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text(
-                text = stringResource(R.string.theme_title),
+                text = stringResource(R.string.appearance),
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
             )
@@ -1088,8 +1090,10 @@ fun SwitchPreference(
     }
 }
 
+// AccentColorPicker accepts String (storedValue) and converts internally
 @Composable
-fun AccentColorPicker(selected: AccentColor, onSelect: (AccentColor) -> Unit) {
+fun AccentColorPicker(selected: String, onSelect: (String) -> Unit) {
+    val selectedEnum = AccentColor.fromStoredValue(selected)
     val colorMap: List<Pair<AccentColor, Color?>> = listOf(
         AccentColor.Dynamic    to null,
         AccentColor.Blue       to Color(0xFF415F91),
@@ -1108,7 +1112,7 @@ fun AccentColorPicker(selected: AccentColor, onSelect: (AccentColor) -> Unit) {
         contentPadding = PaddingValues(horizontal = 2.dp),
     ) {
         items(colorMap) { (accent, swatch) ->
-            val isSelected = selected == accent
+            val isSelected = selectedEnum == accent
             val borderColor = if (isSelected)
                 MaterialTheme.colorScheme.primary
             else
@@ -1122,11 +1126,10 @@ fun AccentColorPicker(selected: AccentColor, onSelect: (AccentColor) -> Unit) {
                         if (swatch != null) swatch
                         else MaterialTheme.colorScheme.primaryContainer
                     )
-                    .clickable { onSelect(accent) },
+                    .clickable { onSelect(accent.storedValue) },
                 contentAlignment = Alignment.Center,
             ) {
                 if (swatch == null) {
-                    // "Dynamic" chip — show small auto icon
                     Icon(
                         imageVector = Icons.Rounded.AutoAwesome,
                         contentDescription = accent.name,
@@ -1146,8 +1149,10 @@ fun AccentColorPicker(selected: AccentColor, onSelect: (AccentColor) -> Unit) {
     }
 }
 
+// ThemePicker accepts String (storedValue) and converts internally
 @Composable
-fun ThemePicker(selected: AppThemeMode, onSelect: (AppThemeMode) -> Unit) {
+fun ThemePicker(selected: String, onSelect: (String) -> Unit) {
+    val selectedEnum = AppThemeMode.fromStoredValue(selected)
     val options = listOf(
         AppThemeMode.System to stringResource(R.string.theme_system),
         AppThemeMode.Light  to stringResource(R.string.theme_light),
@@ -1156,8 +1161,8 @@ fun ThemePicker(selected: AppThemeMode, onSelect: (AppThemeMode) -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         options.forEach { (mode, label) ->
             FilterChip(
-                selected = selected == mode,
-                onClick = { onSelect(mode) },
+                selected = selectedEnum == mode,
+                onClick = { onSelect(mode.storedValue) },
                 label = { Text(label) },
             )
         }
