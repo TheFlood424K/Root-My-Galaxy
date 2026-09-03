@@ -9,8 +9,8 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -29,10 +29,6 @@ import kotlinx.coroutines.launch
  * The service stops itself when the install reaches a terminal phase
  * (Installed / Failed). It is not restarted by the system afterwards;
  * re-running happens on the next boot or from the app UI.
- *
- * When [AppPreferences.rebootAfterInstall] is enabled the service will
- * execute `su -c svc power reboot userspace` immediately after a successful
- * [InstallPhase.Installed] before stopping itself.
  */
 class BootInstallService : Service() {
 
@@ -41,6 +37,9 @@ class BootInstallService : Service() {
 
     private var previousShizukuMode: Boolean? = null
 
+    // Own a ViewModelStore so the ViewModel is properly scoped to this
+    // service lifetime and its viewModelScope is cancelled when we clear it.
+    private val viewModelStore = ViewModelStore()
     private lateinit var viewModel: InstallViewModel
 
     override fun onCreate() {
@@ -51,8 +50,10 @@ class BootInstallService : Service() {
         // reachable at boot time.
         previousShizukuMode = AppPreferences.shizukuMode(this)
         AppPreferences.setShizukuMode(this, false)
-        viewModel = ViewModelProvider.AndroidViewModelFactory.getInstance(application)
-            .create(InstallViewModel::class.java)
+        viewModel = ViewModelProvider(
+            viewModelStore,
+            ViewModelProvider.AndroidViewModelFactory.getInstance(application),
+        )[InstallViewModel::class.java]
         startForeground(
             notificationId,
             buildNotification(getString(R.string.status_checking_github)),
@@ -72,12 +73,7 @@ class BootInstallService : Service() {
                 val text = state.log.lineSequence().lastOrNull()?.take(120)
                     ?: state.message
                 notify(title, text)
-                if (state.phase == InstallPhase.Installed) {
-                    if (AppPreferences.rebootAfterInstall(this@BootInstallService)) {
-                        triggerUserspaceReboot()
-                    }
-                    stopSelf()
-                } else if (state.phase == InstallPhase.Failed) {
+                if (state.phase == InstallPhase.Installed || state.phase == InstallPhase.Failed) {
                     stopSelf()
                 }
             }
@@ -91,26 +87,14 @@ class BootInstallService : Service() {
     override fun onDestroy() {
         previousShizukuMode?.let { AppPreferences.setShizukuMode(this, it) }
         scope.cancel()
+        // Clearing the store triggers onCleared() on the ViewModel, which
+        // cancels viewModelScope and any coroutines it owns.
+        viewModelStore.clear()
         stopForegroundCompat()
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
-
-    /**
-     * Executes `su -c svc power reboot userspace` on a background thread.
-     * Failures are silently swallowed — the service will still stop itself
-     * via [stopSelf] in the caller regardless of whether the reboot fires.
-     */
-    private fun triggerUserspaceReboot() {
-        scope.launch(Dispatchers.IO) {
-            try {
-                Runtime.getRuntime().exec(arrayOf("su", "-c", "svc power reboot userspace"))
-            } catch (_: Exception) {
-                // su unavailable or command rejected — ignore and let the service stop normally
-            }
-        }
-    }
 
     private fun notify(title: String, text: String) {
         val manager = getSystemService(NotificationManager::class.java)
