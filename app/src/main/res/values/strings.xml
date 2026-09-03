@@ -221,6 +221,8 @@
     <string name="shizuku_mode_description">Use Shizuku for privileged operations.</string>
     <string name="settings_reboot_after_install">Reboot After Install</string>
     <string name="settings_reboot_after_install_description">Automatically reboot the device after a successful installation.</string>
+    <string name="debug_log">Debug Log</string>
+    <string name="debug_log_description">Show verbose [DBG] entries in the log panel during installation.</string>
 
     <!-- Local Payload -->
     <string name="local_payload_mode">Local Payload Mode</string>
