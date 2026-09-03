@@ -44,6 +44,7 @@ object AppPreferences {
     private const val AUTO_REROOT = "auto_reroot"
     private const val REBOOT_AFTER_INSTALL = "reboot_after_install"
     private const val CONSUMED_INSTALL_REQUEST = "consumed_install_request"
+    private const val DEBUG_LOG = "debug_log"
 
     fun accentColor(context: Context): AccentColor = AccentColor.fromStoredValue(
         prefs(context).getString(ACCENT_COLOR, null),
@@ -108,6 +109,20 @@ object AppPreferences {
     fun setRebootAfterInstall(context: Context, enabled: Boolean) {
         prefs(context).edit()
             .putBoolean(REBOOT_AFTER_INSTALL, enabled)
+            .apply()
+    }
+
+    /**
+     * When enabled, verbose [DBG] lines are emitted into the install log
+     * (environment variables, staged paths, raw command output, timing data).
+     * Off by default; surfaced under Advanced options.
+     */
+    fun debugLog(context: Context): Boolean =
+        prefs(context).getBoolean(DEBUG_LOG, false)
+
+    fun setDebugLog(context: Context, enabled: Boolean) {
+        prefs(context).edit()
+            .putBoolean(DEBUG_LOG, enabled)
             .apply()
     }
 

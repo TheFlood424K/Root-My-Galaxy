@@ -4,6 +4,7 @@ import android.app.Application
 import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -149,6 +150,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     private val mutableShizukuMode = MutableStateFlow(AppPreferences.shizukuMode(app))
     private val mutableAutoReroot = MutableStateFlow(AppPreferences.autoReroot(app))
     private val mutableLocalPayloadMode = MutableStateFlow(AppPreferences.localPayloadMode(app))
+    private val mutableDebugLog = MutableStateFlow(AppPreferences.debugLog(app))
 
     private var discoveryJob: Job? = null
     private var installJob: Job? = null
@@ -177,6 +179,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     val shizukuMode: StateFlow<Boolean> = mutableShizukuMode.asStateFlow()
     val autoReroot: StateFlow<Boolean> = mutableAutoReroot.asStateFlow()
     val localPayloadMode: StateFlow<Boolean> = mutableLocalPayloadMode.asStateFlow()
+    val debugLog: StateFlow<Boolean> = mutableDebugLog.asStateFlow()
 
     // Legacy aliases
     val state: StateFlow<InstallUiState> = uiState
@@ -261,6 +264,11 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         mutableThemeModeEnum.value = enum
     }
 
+    fun setDebugLog(enabled: Boolean) {
+        AppPreferences.setDebugLog(app, enabled)
+        mutableDebugLog.value = enabled
+    }
+
     // -----------------------------------------------------------------------
     // Discovery / catalog
     // -----------------------------------------------------------------------
@@ -295,12 +303,18 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 else -> try {
                     repository.resolveTarget(profileId)
                 } catch (e: Exception) {
+                    val msg = buildString {
+                        append(e.message ?: "Failed to resolve profile '$profileId'")
+                        val cause = e.cause
+                        if (cause != null) append(" (caused by: ${cause.message})")
+                    }
                     mutableUiState.value = mutableUiState.value.copy(
                         phase = InstallPhase.Failed,
-                        statusMessage = e.message ?: "Unknown error",
+                        statusMessage = msg,
                         progress = null,
                         progressLabel = null,
                     )
+                    appendLog("[!] Profile resolution failed: $msg")
                     return@launch
                 }
             }
@@ -397,7 +411,11 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 )
                 finishHistory(InstallRunResult.Succeeded)
             } catch (e: Exception) {
-                val msg = e.message ?: "Unknown error"
+                val msg = buildString {
+                    append(e.message ?: "Unknown error")
+                    val cause = e.cause
+                    if (cause != null) append("\nCaused by: ${cause.message}")
+                }
                 mutableUiState.value = mutableUiState.value.copy(
                     phase = InstallPhase.Failed,
                     statusMessage = msg,
@@ -428,11 +446,13 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                     app.getString(R.string.install_preparing),
                     PROGRESS_EXPLOIT_START,
                 )
+                val snapshot = DeviceSnapshot.current()
+                debugLog("[DBG] Local exploit mode – model=${snapshot.model}  kernel=${snapshot.kernelVersion}")
                 val syntheticProfile = TargetProfile(
                     profileId = LOCAL_PROFILE_ID,
                     displayName = "",
-                    models = setOf(DeviceSnapshot.current().model),
-                    kernelVersions = setOf(DeviceSnapshot.current().kernelVersion),
+                    models = setOf(snapshot.model),
+                    kernelVersions = setOf(snapshot.kernelVersion),
                     exploit = RemoteArtifact("", -1L),
                     kernelSu = RemoteArtifact("", -1L),
                     requiresFreshP0Session = false,
@@ -452,10 +472,29 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                     app.getString(R.string.install_preparing),
                     PROGRESS_EXPLOIT_START,
                 )
+                debugLog("[DBG] Using explicit profile: id=${profile.profileId}  name=${profile.displayName}")
+                debugLog("[DBG] Profile targets: models=${profile.models}  kernels=${profile.kernelVersions}")
                 updateHistoryProfile(profile.profileId)
-                repository.download(profile) { msg, fraction ->
-                    appendLog("[*] $msg")
-                    if (fraction != null) emitDownloadProgress(fraction)
+                try {
+                    repository.download(profile) { msg, fraction ->
+                        appendLog("[*] $msg")
+                        if (fraction != null) emitDownloadProgress(fraction)
+                    }
+                } catch (e: java.net.SocketTimeoutException) {
+                    throw IllegalStateException(
+                        "Download timed out for profile '${profile.displayName}'. " +
+                        "Check your internet connection and try again.", e
+                    )
+                } catch (e: java.io.IOException) {
+                    val detail = e.message ?: ""
+                    val httpCode = Regex("""HTTP (\d+)""").find(detail)?.groupValues?.get(1)
+                    throw IllegalStateException(
+                        if (httpCode != null)
+                            "Server returned HTTP $httpCode for profile '${profile.displayName}'. " +
+                            "The payload may have been moved or deleted."
+                        else
+                            "Network error downloading '${profile.displayName}': $detail", e
+                    )
                 }
             }
 
@@ -467,26 +506,56 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                     PROGRESS_CHECKING_END,
                 )
                 val snapshot = DeviceSnapshot.current()
+                debugLog("[DBG] Auto-detect – model=${snapshot.model}  " +
+                    "kernel=${snapshot.kernelVersion}  " +
+                    "android=${snapshot.androidRelease}  " +
+                    "patch=${Build.VERSION.SECURITY_PATCH}")
                 val resolved = try {
                     repository.resolveTarget(snapshot)
                 } catch (e: Exception) {
+                    // Surface a clearer message: include device info so the user
+                    // knows whether the issue is an unsupported model/kernel or a
+                    // network/manifest parse failure.
+                    val baseMsg = e.message ?: "No matching profile found"
+                    val deviceHint = "Device: ${snapshot.model}, kernel ${snapshot.kernelVersion}"
                     mutableUiState.value = mutableUiState.value.copy(
                         phase = InstallPhase.Ready,
                         statusMessage = app.getString(R.string.install_preparing),
                         progress = null,
                         progressLabel = null,
                     )
-                    throw e
+                    appendLog("[!] Profile lookup failed — $baseMsg ($deviceHint)")
+                    throw IllegalStateException("$baseMsg\n$deviceHint", e)
                 }
+                debugLog("[DBG] Matched profile: id=${resolved.profileId}  " +
+                    "name=${resolved.displayName}  " +
+                    "requiresFreshP0=${resolved.requiresFreshP0Session}")
                 setPhase(
                     InstallPhase.Downloading,
                     app.getString(R.string.install_preparing),
                     PROGRESS_EXPLOIT_START,
                 )
                 updateHistoryProfile(resolved.profileId)
-                repository.download(resolved) { msg, fraction ->
-                    appendLog("[*] $msg")
-                    if (fraction != null) emitDownloadProgress(fraction)
+                try {
+                    repository.download(resolved) { msg, fraction ->
+                        appendLog("[*] $msg")
+                        if (fraction != null) emitDownloadProgress(fraction)
+                    }
+                } catch (e: java.net.SocketTimeoutException) {
+                    throw IllegalStateException(
+                        "Download timed out for profile '${resolved.displayName}'. " +
+                        "Check your internet connection and try again.", e
+                    )
+                } catch (e: java.io.IOException) {
+                    val detail = e.message ?: ""
+                    val httpCode = Regex("""HTTP (\d+)""").find(detail)?.groupValues?.get(1)
+                    throw IllegalStateException(
+                        if (httpCode != null)
+                            "Server returned HTTP $httpCode for profile '${resolved.displayName}'. " +
+                            "The payload may have been moved or deleted."
+                        else
+                            "Network error downloading '${resolved.displayName}': $detail", e
+                    )
                 }
             }
         }
@@ -537,14 +606,18 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         var lastError: Throwable? = null
 
         for (attempt in 1..maxAttempts) {
+            val attemptStart = SystemClock.elapsedRealtime()
             if (attempt > 1) {
                 appendLog("[*] Retrying exploit (attempt $attempt / $maxAttempts)…")
             }
             try {
                 executeExploit(payload, requiresFreshP0Session, bootToken, attempt)
+                debugLog("[DBG] Exploit succeeded on attempt $attempt " +
+                    "(${SystemClock.elapsedRealtime() - attemptStart} ms)")
                 return // success
             } catch (e: ExploitStallException) {
-                appendLog("[!] Attempt $attempt stalled – ${e.message}; retrying")
+                val elapsed = SystemClock.elapsedRealtime() - attemptStart
+                appendLog("[!] Attempt $attempt stalled after ${elapsed} ms – ${e.message}; retrying")
                 lastError = e
             } catch (e: Exception) {
                 throw e
@@ -578,6 +651,10 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
 
         val logPrefix = mutableUiState.value.log
         val env = buildExploitEnvironment(bootToken, payload, helper, shizuku)
+
+        debugLog("[DBG] Exploit attempt $attempt — payload=${payload.absolutePath} " +
+            "(${payload.length()} B)  logFile=${logFile.absolutePath}  shizuku=$shizuku")
+        debugLog("[DBG] Env: ${env.joinToString("  ")}")
 
         val process = launchExploitProcess(payload, helper, logFile, shizuku, env)
 
@@ -614,7 +691,9 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 val totalMs = now - startedAt
 
                 if (stallMs >= EXPLOIT_STALL_MILLIS) {
-                    throw ExploitStallException(app.getString(R.string.error_exploit_stalled))
+                    throw ExploitStallException(
+                        "${app.getString(R.string.error_exploit_stalled)} (no output for ${stallMs} ms)"
+                    )
                 }
 
                 require(totalMs < EXPLOIT_TOTAL_MILLIS) {
@@ -633,10 +712,21 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
             publishExploitLog(logPrefix, rawLog)
 
             val exitCode = process.waitFor()
-            require(exitCode == 0) {
-                val detail = earlyOutput.toString().trim()
-                    .takeIf(String::isNotBlank)?.let { ": $it" } ?: ""
-                app.getString(R.string.error_payload_exit, exitCode, detail)
+            if (exitCode != 0) {
+                // Include last 5 lines of the exploit log so the failure reason
+                // is visible directly in the UI without needing adb logcat.
+                val logTail = rawLog.lines()
+                    .filter { it.isNotBlank() }
+                    .takeLast(5)
+                    .joinToString("\n")
+                val earlyDetail = earlyOutput.toString().trim()
+                    .takeIf(String::isNotBlank)?.let { "\nProcess output: $it" } ?: ""
+                val logDetail = logTail
+                    .takeIf(String::isNotBlank)?.let { "\nExploit log:\n$it" } ?: ""
+                error(
+                    app.getString(R.string.error_payload_exit, exitCode, "") +
+                    earlyDetail + logDetail
+                )
             }
 
             cacheP0Offset(bootToken, rawLog)
@@ -678,6 +768,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         return if (shizuku) {
             val stagedHelper = shizukuStage(nativeHelperFile(), SHIZUKU_HELPER_PATH, "755")
             val stagedPayload = shizukuStage(payload, SHIZUKU_PAYLOAD_PATH, "755")
+            debugLog("[DBG] Shizuku staged: helper=${stagedHelper.absolutePath}  payload=${stagedPayload.absolutePath}")
             ShizukuController.exec(
                 arrayOf(
                     stagedHelper.absolutePath,
@@ -744,30 +835,45 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     private suspend fun installKernelSu(payloads: VerifiedPayloads) {
         val ksud = payloads.kernelSu
         appendLog(app.getString(R.string.log_kernelsu_source, ksud.absolutePath))
+        debugLog("[DBG] ksud size=${ksud.length()} B  sha256=${sha256OrNull(ksud) ?: "n/a"}")
 
         val (stagedKsud, stagePath) = stageKsud(ksud)
+        debugLog("[DBG] ksud staged to ${stagedKsud.absolutePath}  stagePath=$stagePath")
 
         val stageCommand = "${shellQuote(stagedKsud.absolutePath)} install --path ${shellQuote(stagePath)}"
+        debugLog("[DBG] Running stage command: $stageCommand")
         val stage = runHelper("-c", stageCommand)
-        require(stage.code == 0) {
-            app.getString(
-                R.string.error_ksu_stage,
-                stage.output.takeIf(String::isNotBlank) ?: stage.code.toString(),
+        if (stage.code != 0) {
+            val out = stage.output.trim().takeIf(String::isNotBlank)
+            debugLog("[DBG] ksud stage output: ${out ?: "(empty)"}")
+            throw IllegalStateException(
+                app.getString(
+                    R.string.error_ksu_stage,
+                    out ?: "exit code ${stage.code}",
+                )
             )
         }
         appendLog(app.getString(R.string.log_ksu_staged))
 
+        debugLog("[DBG] Running --late-load")
         val lateLoad = runHelper("--late-load")
-        require(lateLoad.code == 0) {
-            app.getString(R.string.error_ksu_verify, lateLoad.code,
-                lateLoad.output.takeIf(String::isNotBlank) ?: "")
+        if (lateLoad.code != 0) {
+            val out = lateLoad.output.trim().takeIf(String::isNotBlank)
+            debugLog("[DBG] late-load output: ${out ?: "(empty)"}")
+            throw IllegalStateException(
+                app.getString(R.string.error_ksu_verify, lateLoad.code, out ?: "")
+            )
         }
 
         val libksudPath = app.applicationInfo.nativeLibraryDir + "/libksud.so"
+        debugLog("[DBG] Verifying KSU control via libksud at $libksudPath")
         val verify = runHelper("-c", "\"${shellQuote(libksudPath)}\"")
-        require(verify.code == 0) {
-            app.getString(R.string.error_ksu_verify, verify.code,
-                verify.output.takeIf(String::isNotBlank) ?: "")
+        if (verify.code != 0) {
+            val out = verify.output.trim().takeIf(String::isNotBlank)
+            debugLog("[DBG] verify output: ${out ?: "(empty)"}")
+            throw IllegalStateException(
+                app.getString(R.string.error_ksu_verify, verify.code, out ?: "")
+            )
         }
         appendLog(app.getString(R.string.log_ksu_control_verified))
     }
@@ -897,6 +1003,16 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         updateHistoryLog()
     }
 
+    /**
+     * Appends a verbose [DBG] line to the install log **only when Debug Log is
+     * enabled** in Advanced options. Also mirrors to [android.util.Log.d] so
+     * the line appears in logcat regardless of the in-app toggle.
+     */
+    private fun debugLog(line: String) {
+        Log.d(TAG, line)
+        if (mutableDebugLog.value) appendLog(line)
+    }
+
     private fun error(message: String): Nothing = throw IllegalStateException(message)
 
     private fun shouldRebootUserspace(): Boolean =
@@ -919,7 +1035,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     private fun shizukuStage(source: File, target: String, mode: String): File {
         val result = ShizukuController.exec(arrayOf("cp", source.absolutePath, target)).waitFor()
         require(result == 0) {
-            app.getString(R.string.error_shizuku_stage, source.name, "cp exited $result")
+            app.getString(R.string.error_shizuku_stage, source.name, "cp → $target exited $result")
         }
         ShizukuController.exec(arrayOf("chmod", mode, target)).waitFor()
         return File(target)
@@ -928,6 +1044,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     private suspend fun runHelper(vararg arguments: String): CommandResult =
         withContext(Dispatchers.IO) {
             val helper = helperFile()
+            debugLog("[DBG] runHelper: ${listOf(helper.name) + arguments.toList()}")
             val process = if (shizukuEnabled()) {
                 ShizukuController.exec(arrayOf(helper.absolutePath) + arguments)
             } else {
@@ -950,7 +1067,12 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                     delay(HELPER_POLL_INTERVAL)
                 }
                 drainProcessOutput(process, captured)
-                CommandResult(process.waitFor(), stripAnsi(captured.toString().trim()))
+                val output = stripAnsi(captured.toString().trim())
+                val code = process.waitFor()
+                if (code != 0 && output.isNotBlank()) {
+                    debugLog("[DBG] runHelper exit=$code  output=$output")
+                }
+                CommandResult(code, output)
             } finally {
                 killProcess(process)
             }
@@ -1008,6 +1130,8 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     // -----------------------------------------------------------------------
 
     companion object {
+        private const val TAG = "InstallViewModel"
+
         internal const val PAYLOAD_EXPLOIT = "exploit"
         internal const val PAYLOAD_KERNELSU = "kernelsu"
         internal const val LOCAL_PROFILE_ID = "__local__"
