@@ -895,12 +895,16 @@ fun ProfileSelectionSheet(
                 else -> {
                     LazyColumn {
                         items(catalogState.profiles) { profile ->
+                            // Use the current trailing-content-lambda overload of ListItem.
+                            // The named headlineContent = { ... } overload was deprecated in
+                            // Material3 1.3.0; headlineContent is now the trailing lambda.
                             ListItem(
-                                headlineContent = {
-                                    Text(
-                                        profile.displayName,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.Medium,
+                                modifier = Modifier.clickable { onSelect(profile) },
+                                leadingContent = {
+                                    Icon(
+                                        Icons.Rounded.PhoneAndroid,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
                                     )
                                 },
                                 supportingContent = {
@@ -910,15 +914,13 @@ fun ProfileSelectionSheet(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 },
-                                leadingContent = {
-                                    Icon(
-                                        Icons.Rounded.PhoneAndroid,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                    )
-                                },
-                                modifier = Modifier.clickable { onSelect(profile) },
-                            )
+                            ) {
+                                Text(
+                                    profile.displayName,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                            }
                             HorizontalDivider()
                         }
                     }
@@ -1085,11 +1087,12 @@ fun HistoryEntryItem(entry: InstallHistoryEntry, onDelete: () -> Unit) {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    // InstallRunResult is non-nullable; use else instead of a null branch.
                     val resultLabel = when (entry.result) {
                         InstallRunResult.Succeeded -> stringResource(R.string.history_succeeded)
                         InstallRunResult.Failed    -> stringResource(R.string.history_failed)
                         InstallRunResult.Running   -> stringResource(R.string.history_running)
-                        null -> if (entry.completedAtMillis == null)
+                        else -> if (entry.completedAtMillis == null)
                             stringResource(R.string.history_running)
                         else
                             stringResource(R.string.history_completed)
@@ -1307,90 +1310,20 @@ fun SwitchPreference(
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
-            Text(title, style = MaterialTheme.typography.bodyMedium)
             Text(
-                subtitle,
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Switch(checked = checked, onCheckedChange = null)
-    }
-}
-
-@Composable
-fun AccentColorPicker(selected: String, onSelect: (String) -> Unit) {
-    val selectedEnum = AccentColor.fromStoredValue(selected)
-    val colorMap: List<Pair<AccentColor, Color?>> = listOf(
-        AccentColor.Dynamic    to null,
-        AccentColor.Blue       to Color(0xFF415F91),
-        AccentColor.Violet     to Color(0xFF6750A4),
-        AccentColor.Green      to Color(0xFF356A35),
-        AccentColor.Orange     to Color(0xFF8B4F23),
-        AccentColor.Purple     to Color(0xFF7B3FA0),
-        AccentColor.Red        to Color(0xFFB3261E),
-        AccentColor.Pink       to Color(0xFF9C27B0),
-        AccentColor.Teal       to Color(0xFF00695C),
-        AccentColor.Yellow     to Color(0xFFF9A825),
-        AccentColor.Monochrome to Color(0xFF757575),
-    )
-    LazyRow(
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        contentPadding = PaddingValues(horizontal = 2.dp),
-    ) {
-        items(colorMap) { (accent, swatch) ->
-            val isSelected = selectedEnum == accent
-            val borderColor = if (isSelected)
-                MaterialTheme.colorScheme.primary
-            else
-                Color.Transparent
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(CircleShape)
-                    .border(2.dp, borderColor, CircleShape)
-                    .background(
-                        if (swatch != null) swatch
-                        else MaterialTheme.colorScheme.primaryContainer
-                    )
-                    .clickable { onSelect(accent.storedValue) },
-                contentAlignment = Alignment.Center,
-            ) {
-                if (swatch == null) {
-                    Icon(
-                        imageVector = Icons.Rounded.AutoAwesome,
-                        contentDescription = accent.name,
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.size(16.dp),
-                    )
-                } else if (isSelected) {
-                    Icon(
-                        imageVector = Icons.Rounded.Check,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(16.dp),
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun ThemePicker(selected: String, onSelect: (String) -> Unit) {
-    val selectedEnum = AppThemeMode.fromStoredValue(selected)
-    val options = listOf(
-        AppThemeMode.System to stringResource(R.string.theme_system),
-        AppThemeMode.Light  to stringResource(R.string.theme_light),
-        AppThemeMode.Dark   to stringResource(R.string.theme_dark),
-    )
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        options.forEach { (mode, label) ->
-            FilterChip(
-                selected = selectedEnum == mode,
-                onClick = { onSelect(mode.storedValue) },
-                label = { Text(label) },
-            )
-        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+        )
     }
 }
