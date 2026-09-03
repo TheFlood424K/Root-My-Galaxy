@@ -51,6 +51,27 @@ private fun accentSeed(context: Context, accentColor: AccentColor): Color = when
     AccentColor.Monochrome -> Color(0xFF757575)
 }
 
+/**
+ * Public overload used by MainActivity — accepts raw stored-value strings so callers
+ * don't need to import or reference the enum types directly.
+ */
+@Composable
+fun RootMyGalaxyTheme(
+    accentColor: String,
+    themeMode: String,
+    content: @Composable () -> Unit,
+) {
+    RootMyGalaxyTheme(
+        accentColor = AccentColor.fromStoredValue(accentColor),
+        themeMode = AppThemeMode.fromStoredValue(themeMode),
+        content = content,
+    )
+}
+
+/**
+ * Internal overload that works with typed enums — used by the String overload above
+ * and available for any other call sites that already hold enum values.
+ */
 @Composable
 fun RootMyGalaxyTheme(
     accentColor: AccentColor,
@@ -61,8 +82,8 @@ fun RootMyGalaxyTheme(
     val systemDarkTheme = isSystemInDarkTheme()
     val darkTheme = when (themeMode) {
         AppThemeMode.System -> systemDarkTheme
-        AppThemeMode.Light -> false
-        AppThemeMode.Dark -> true
+        AppThemeMode.Light  -> false
+        AppThemeMode.Dark   -> true
     }
     val colors = if (accentColor == AccentColor.Dynamic) {
         if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
