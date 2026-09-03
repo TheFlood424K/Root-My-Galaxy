@@ -4,34 +4,50 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import dev.busung.s25uroot.ui.theme.RootMyGalaxyTheme
 
 // ---------------------------------------------------------------------------
 // Activity
@@ -43,15 +59,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // Handle deep-link / notification intents that carry a profile id
+        enableEdgeToEdge()
         handleIntent(intent)
 
         setContent {
             val accentColor by viewModel.accentColor.collectAsStateWithLifecycle()
-            val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
+            val themeMode  by viewModel.themeMode.collectAsStateWithLifecycle()
 
-            AppTheme(accentColor = accentColor, themeMode = themeMode) {
+            RootMyGalaxyTheme(accentColor = accentColor, themeMode = themeMode) {
                 MainScreen(viewModel = viewModel)
             }
         }
@@ -63,9 +78,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
-        val profileId = intent
-            ?.getStringExtra(EXTRA_PROFILE_ID)
-            ?: return
+        val profileId = intent?.getStringExtra(EXTRA_PROFILE_ID) ?: return
         viewModel.setPendingInstallRequest(profileId)
     }
 
@@ -84,7 +97,6 @@ fun MainScreen(viewModel: InstallViewModel) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val installHistory by viewModel.installHistory.collectAsStateWithLifecycle()
 
-    // Pending install-request confirmation dialog
     val pendingRequest = uiState.pendingInstallRequest
     if (pendingRequest != null) {
         val profile = uiState.selectedProfile
@@ -96,9 +108,7 @@ fun MainScreen(viewModel: InstallViewModel) {
                 val target = profile ?: return@InstallConfirmDialog
                 viewModel.startRoot(target)
             },
-            onDismiss = {
-                viewModel.consumePendingInstallRequest()
-            },
+            onDismiss = { viewModel.consumePendingInstallRequest() },
         )
     }
 
@@ -128,12 +138,12 @@ fun MainScreen(viewModel: InstallViewModel) {
                 )
             }
             composable("settings") {
-                val advancedMode by viewModel.advancedMode.collectAsStateWithLifecycle()
-                val shizukuMode by viewModel.shizukuMode.collectAsStateWithLifecycle()
-                val autoReroot by viewModel.autoReroot.collectAsStateWithLifecycle()
-                val localPayloadMode by viewModel.localPayloadMode.collectAsStateWithLifecycle()
-                val accentColor by viewModel.accentColor.collectAsStateWithLifecycle()
-                val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
+                val advancedMode  by viewModel.advancedMode.collectAsStateWithLifecycle()
+                val shizukuMode   by viewModel.shizukuMode.collectAsStateWithLifecycle()
+                val autoReroot    by viewModel.autoReroot.collectAsStateWithLifecycle()
+                val localPayload  by viewModel.localPayloadMode.collectAsStateWithLifecycle()
+                val accentColor   by viewModel.accentColor.collectAsStateWithLifecycle()
+                val themeMode     by viewModel.themeMode.collectAsStateWithLifecycle()
                 SettingsScreen(
                     advancedMode = advancedMode,
                     onAdvancedModeChange = { viewModel.setAdvancedMode(it) },
@@ -141,7 +151,7 @@ fun MainScreen(viewModel: InstallViewModel) {
                     onShizukuModeChange = { viewModel.setShizukuMode(it) },
                     autoReroot = autoReroot,
                     onAutoRerootChange = { viewModel.setAutoReroot(it) },
-                    localPayloadMode = localPayloadMode,
+                    localPayloadMode = localPayload,
                     onLocalPayloadModeChange = { viewModel.setLocalPayloadMode(it) },
                     accentColor = accentColor,
                     onAccentColorChange = { viewModel.setAccentColor(it) },
@@ -166,19 +176,19 @@ fun BottomNavBar(navController: NavHostController) {
         NavigationBarItem(
             selected = current == "overview",
             onClick = { navController.navigate("overview") { launchSingleTop = true } },
-            icon = { Icon(Icons.Default.Home, contentDescription = null) },
+            icon = { Icon(Icons.Rounded.Home, contentDescription = null) },
             label = { Text(stringResource(R.string.nav_overview)) },
         )
         NavigationBarItem(
             selected = current == "history",
             onClick = { navController.navigate("history") { launchSingleTop = true } },
-            icon = { Icon(Icons.Default.History, contentDescription = null) },
+            icon = { Icon(Icons.Rounded.History, contentDescription = null) },
             label = { Text(stringResource(R.string.nav_history)) },
         )
         NavigationBarItem(
             selected = current == "settings",
             onClick = { navController.navigate("settings") { launchSingleTop = true } },
-            icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+            icon = { Icon(Icons.Rounded.Settings, contentDescription = null) },
             label = { Text(stringResource(R.string.nav_settings)) },
         )
     }
@@ -203,12 +213,11 @@ fun OverviewScreen(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        // Device card
-        val device = uiState.device
-        if (device != null) {
+        // ── Device info ───────────────────────────────────────────────────
+        uiState.device?.let { device ->
             DeviceCard(
                 device = device,
                 androidVersion = uiState.androidVersion ?: "",
@@ -216,27 +225,24 @@ fun OverviewScreen(
             )
         }
 
-        // KernelSU status card
-        KernelSuCard(
-            isRooted = uiState.isRooted,
-            kernelSuVersion = uiState.kernelSuVersion,
-        )
+        // ── KernelSU status ───────────────────────────────────────────────
+        KernelSuCard(isRooted = uiState.isRooted, kernelSuVersion = uiState.kernelSuVersion)
 
-        // Selected profile
-        val selectedProfile = uiState.selectedProfile
+        // ── Profile picker ────────────────────────────────────────────────
         OutlinedCard(
             modifier = Modifier.fillMaxWidth(),
-            onClick = {
-                onLoadCatalog()
-                showProfileSheet = true
-            },
+            onClick = { onLoadCatalog(); showProfileSheet = true },
         ) {
             Row(
                 modifier = Modifier.padding(16.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Icon(Icons.Default.PhoneAndroid, contentDescription = null)
+                Icon(
+                    imageVector = Icons.Rounded.PhoneAndroid,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                )
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = stringResource(R.string.select_device_title),
@@ -244,69 +250,127 @@ fun OverviewScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        text = selectedProfile?.displayName
+                        text = uiState.selectedProfile?.displayName
                             ?: stringResource(R.string.select_device_description),
                         style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
-                    if (selectedProfile != null) {
+                    uiState.selectedProfile?.let {
                         Text(
-                            text = selectedProfile.supportedModels,
+                            text = it.supportedModels,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                 }
-                Icon(Icons.Default.ChevronRight, contentDescription = null)
+                Icon(
+                    imageVector = Icons.Rounded.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
 
-        // Steps
+        // ── Steps ─────────────────────────────────────────────────────────
         StepsCard(phase = uiState.phase)
 
-        // Progress / status
-        if (uiState.busy) {
-            if (uiState.progress != null) {
-                LinearProgressIndicator(
-                    progress = { uiState.progress },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            } else {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        // ── Progress card (only shown while busy) ─────────────────────────
+        AnimatedVisibility(
+            visible = uiState.busy,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically(),
+        ) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                ),
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = uiState.statusMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        uiState.progress?.let { p ->
+                            Text(
+                                text = "${(p * 100).toInt()}%",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            )
+                        }
+                    }
+                    if (uiState.progress != null) {
+                        LinearProgressIndicator(
+                            progress = { uiState.progress },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = MaterialTheme.colorScheme.primary,
+                            trackColor = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.2f),
+                        )
+                    } else {
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = MaterialTheme.colorScheme.primary,
+                            trackColor = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.2f),
+                        )
+                    }
+                }
             }
-            Text(
-                text = uiState.statusMessage,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
 
-        // Action button
-        val phase = uiState.phase
-        if (phase == InstallPhase.Done) {
-            Button(
-                onClick = { /* nothing to do */ },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = false,
-            ) { Text(stringResource(R.string.action_done)) }
-        } else if (uiState.busy) {
-            OutlinedButton(
-                onClick = onStopSession,
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text(stringResource(R.string.action_cancel)) }
-        } else {
-            Button(
-                onClick = onStartRoot,
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text(stringResource(R.string.install_tap_start)) }
+        // ── Action button ─────────────────────────────────────────────────
+        when {
+            uiState.phase == InstallPhase.Done -> {
+                FilledTonalButton(
+                    onClick = {},
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = false,
+                ) {
+                    Icon(
+                        Icons.Rounded.Check,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(R.string.action_done))
+                }
+            }
+            uiState.busy -> {
+                OutlinedButton(
+                    onClick = onStopSession,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(stringResource(R.string.action_cancel)) }
+            }
+            else -> {
+                Button(
+                    onClick = onStartRoot,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(stringResource(R.string.install_tap_start)) }
+            }
         }
 
-        // Log output
+        // ── Log output ────────────────────────────────────────────────────
         if (uiState.log.isNotBlank()) {
             LogCard(log = uiState.log)
         }
     }
 
-    // Profile selection bottom sheet
     if (showProfileSheet) {
         ProfileSelectionSheet(
             catalogState = catalogState,
@@ -320,21 +384,40 @@ fun OverviewScreen(
 }
 
 // ---------------------------------------------------------------------------
-// Sub-composables: cards
+// Cards
 // ---------------------------------------------------------------------------
 
 @Composable
 fun DeviceCard(device: DeviceSnapshot, androidVersion: String, securityPatch: String) {
     Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(stringResource(R.string.device), style = MaterialTheme.typography.titleMedium)
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    Icons.Rounded.PhoneAndroid,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    stringResource(R.string.device),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
             InfoRow(label = stringResource(R.string.firmware), value = device.model)
             InfoRow(label = stringResource(R.string.kernel), value = device.kernelVersion)
             if (androidVersion.isNotBlank()) {
                 InfoRow(label = "Android", value = androidVersion)
             }
             if (securityPatch.isNotBlank()) {
-                InfoRow(label = stringResource(R.string.firmware), value = securityPatch)
+                InfoRow(label = stringResource(R.string.security_patch), value = securityPatch)
             }
             InfoRow(label = stringResource(R.string.system_abi), value = device.abi)
         }
@@ -343,32 +426,50 @@ fun DeviceCard(device: DeviceSnapshot, androidVersion: String, securityPatch: St
 
 @Composable
 fun KernelSuCard(isRooted: Boolean, kernelSuVersion: String?) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    val containerColor by animateColorAsState(
+        targetValue = if (isRooted)
+            MaterialTheme.colorScheme.primaryContainer
+        else
+            MaterialTheme.colorScheme.errorContainer,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "ksuCardColor",
+    )
+    val contentColor = if (isRooted)
+        MaterialTheme.colorScheme.onPrimaryContainer
+    else
+        MaterialTheme.colorScheme.onErrorContainer
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+    ) {
         Row(
             modifier = Modifier.padding(16.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Icon(
-                imageVector = if (isRooted) Icons.Default.CheckCircle else Icons.Default.Cancel,
+                imageVector = if (isRooted) Icons.Rounded.CheckCircle else Icons.Rounded.Cancel,
                 contentDescription = null,
-                tint = if (isRooted) MaterialTheme.colorScheme.primary
-                       else MaterialTheme.colorScheme.error,
+                tint = contentColor,
+                modifier = Modifier.size(28.dp),
             )
             Column {
                 Text(
                     stringResource(R.string.kernelsu_card_title),
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = contentColor,
                 )
                 Text(
-                    text = if (isRooted && kernelSuVersion != null)
-                               stringResource(R.string.version_format, kernelSuVersion)
-                           else if (isRooted)
-                               stringResource(R.string.phase_installed)
-                           else
-                               stringResource(R.string.status_not_installed),
+                    text = when {
+                        isRooted && kernelSuVersion != null ->
+                            stringResource(R.string.version_format, kernelSuVersion)
+                        isRooted -> stringResource(R.string.phase_installed)
+                        else -> stringResource(R.string.status_not_installed)
+                    },
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = contentColor.copy(alpha = 0.8f),
                 )
             }
         }
@@ -378,27 +479,39 @@ fun KernelSuCard(isRooted: Boolean, kernelSuVersion: String?) {
 @Composable
 fun StepsCard(phase: InstallPhase) {
     Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(stringResource(R.string.how_it_works), style = MaterialTheme.typography.titleMedium)
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                stringResource(R.string.how_it_works),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
             StepRow(
+                icon = Icons.Rounded.Search,
                 title = stringResource(R.string.step_support_title),
                 detail = stringResource(R.string.step_support_detail),
                 active = phase == InstallPhase.Checking,
                 done = phase.ordinal > InstallPhase.Checking.ordinal,
             )
             StepRow(
+                icon = Icons.Rounded.CloudDownload,
                 title = stringResource(R.string.step_download_title),
                 detail = stringResource(R.string.step_download_detail),
                 active = phase == InstallPhase.Downloading,
                 done = phase.ordinal > InstallPhase.Downloading.ordinal,
             )
             StepRow(
+                icon = Icons.Rounded.Security,
                 title = stringResource(R.string.step_exploit_title),
                 detail = stringResource(R.string.step_exploit_detail),
                 active = phase == InstallPhase.Exploiting,
                 done = phase.ordinal > InstallPhase.Exploiting.ordinal,
             )
             StepRow(
+                icon = Icons.Rounded.Memory,
                 title = stringResource(R.string.step_ksu_title),
                 detail = stringResource(R.string.step_ksu_detail),
                 active = phase == InstallPhase.LoadingKernelSu,
@@ -409,26 +522,43 @@ fun StepsCard(phase: InstallPhase) {
 }
 
 @Composable
-fun StepRow(title: String, detail: String, active: Boolean, done: Boolean) {
+fun StepRow(
+    icon: ImageVector,
+    title: String,
+    detail: String,
+    active: Boolean,
+    done: Boolean,
+) {
+    val iconTint by animateColorAsState(
+        targetValue = when {
+            done   -> MaterialTheme.colorScheme.primary
+            active -> MaterialTheme.colorScheme.tertiary
+            else   -> MaterialTheme.colorScheme.outlineVariant
+        },
+        label = "stepIconTint",
+    )
     Row(
-        verticalAlignment = Alignment.CenterVertically,
+        verticalAlignment = Alignment.Top,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Icon(
             imageVector = when {
-                done -> Icons.Default.CheckCircle
-                active -> Icons.Default.RadioButtonChecked
-                else -> Icons.Default.RadioButtonUnchecked
+                done   -> Icons.Rounded.CheckCircle
+                active -> Icons.Rounded.RadioButtonChecked
+                else   -> Icons.Rounded.RadioButtonUnchecked
             },
             contentDescription = null,
-            tint = when {
-                done -> MaterialTheme.colorScheme.primary
-                active -> MaterialTheme.colorScheme.tertiary
-                else -> MaterialTheme.colorScheme.outlineVariant
-            },
+            tint = iconTint,
+            modifier = Modifier.size(20.dp).padding(top = 2.dp),
         )
-        Column {
-            Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
+                color = if (active) MaterialTheme.colorScheme.onSurface
+                        else MaterialTheme.colorScheme.onSurface.copy(alpha = if (done) 1f else 0.6f),
+            )
             Text(
                 detail,
                 style = MaterialTheme.typography.bodySmall,
@@ -440,28 +570,48 @@ fun StepRow(title: String, detail: String, active: Boolean, done: Boolean) {
 
 @Composable
 fun LogCard(log: String) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            text = log,
-            modifier = Modifier.padding(12.dp),
-            fontFamily = FontFamily.Monospace,
-            fontSize = 11.sp,
-            lineHeight = 16.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+        ),
+    ) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                text = stringResource(R.string.history_log),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = log,
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
     }
 }
 
 @Composable
 fun InfoRow(label: String, value: String) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
         Text(
             text = label,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(100.dp),
+            modifier = Modifier.widthIn(min = 80.dp, max = 120.dp),
         )
-        Text(text = value, style = MaterialTheme.typography.bodySmall)
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -483,21 +633,31 @@ fun ProfileSelectionSheet(
                 style = MaterialTheme.typography.titleLarge,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
             )
+            HorizontalDivider()
             when {
                 catalogState.loading -> {
                     Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(160.dp),
+                        modifier = Modifier.fillMaxWidth().height(160.dp),
                         contentAlignment = Alignment.Center,
                     ) { CircularProgressIndicator() }
                 }
                 catalogState.error != null -> {
-                    Text(
-                        text = catalogState.error,
-                        color = MaterialTheme.colorScheme.error,
+                    Row(
                         modifier = Modifier.padding(16.dp),
-                    )
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Rounded.Error,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                        )
+                        Text(
+                            text = catalogState.error,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
                 }
                 catalogState.profiles.isEmpty() -> {
                     Text(
@@ -510,11 +670,25 @@ fun ProfileSelectionSheet(
                     LazyColumn {
                         items(catalogState.profiles) { profile ->
                             ListItem(
-                                headlineContent = { Text(profile.displayName) },
+                                headlineContent = {
+                                    Text(
+                                        profile.displayName,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Medium,
+                                    )
+                                },
                                 supportingContent = {
                                     Text(
                                         profile.supportedModels,
+                                        style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                },
+                                leadingContent = {
+                                    Icon(
+                                        Icons.Rounded.PhoneAndroid,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
                                     )
                                 },
                                 modifier = Modifier.clickable { onSelect(profile) },
@@ -541,19 +715,28 @@ fun InstallConfirmDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Rounded.Security, contentDescription = null) },
         title = { Text(stringResource(R.string.install_confirm_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(stringResource(R.string.install_confirm_body))
-                Text(
-                    stringResource(R.string.install_confirm_source, source),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = stringResource(R.string.install_confirm_source, source),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(8.dp),
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
             }
         },
         confirmButton = {
-            TextButton(onClick = onConfirm) { Text(stringResource(R.string.action_confirm)) }
+            Button(onClick = onConfirm) { Text(stringResource(R.string.action_confirm)) }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
@@ -572,26 +755,36 @@ fun HistoryScreen(
     onDeleteAll: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
+        // Header row
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(stringResource(R.string.history_title), style = MaterialTheme.typography.titleLarge)
+            Text(
+                stringResource(R.string.history_title),
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
             if (history.isNotEmpty()) {
                 TextButton(onClick = onDeleteAll) {
+                    Icon(
+                        Icons.Rounded.DeleteSweep,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(Modifier.width(4.dp))
                     Text(stringResource(R.string.history_delete_selected))
                 }
             }
         }
+        HorizontalDivider()
 
         if (history.isEmpty()) {
             Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(32.dp),
+                modifier = Modifier.fillMaxSize().padding(32.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 Column(
@@ -599,14 +792,15 @@ fun HistoryScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Icon(
-                        Icons.Default.History,
+                        Icons.Rounded.History,
                         contentDescription = null,
-                        modifier = Modifier.size(48.dp),
+                        modifier = Modifier.size(56.dp),
                         tint = MaterialTheme.colorScheme.outlineVariant,
                     )
                     Text(
                         stringResource(R.string.history_empty_title),
                         style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Medium,
                     )
                     Text(
                         stringResource(R.string.history_empty_description),
@@ -634,69 +828,96 @@ fun HistoryEntryItem(entry: InstallHistoryEntry, onDelete: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .clickable { expanded = !expanded }
-            .padding(16.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = entry.profileId ?: stringResource(R.string.history_payload),
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
-                )
-                val resultLabel = when (entry.result) {
-                    InstallRunResult.Succeeded -> stringResource(R.string.history_succeeded)
-                    InstallRunResult.Failed -> stringResource(R.string.history_failed)
-                    InstallRunResult.Running -> stringResource(R.string.history_running)
-                    null -> if (entry.completedAtMillis == null)
-                        stringResource(R.string.history_running)
-                    else
-                        stringResource(R.string.history_completed)
-                }
-                Text(
-                    text = resultLabel,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = when (entry.result) {
-                        InstallRunResult.Succeeded -> MaterialTheme.colorScheme.primary
-                        InstallRunResult.Failed -> MaterialTheme.colorScheme.error
-                        InstallRunResult.Running -> MaterialTheme.colorScheme.onSurfaceVariant
-                        null -> MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
+            val resultColor = when (entry.result) {
+                InstallRunResult.Succeeded -> MaterialTheme.colorScheme.primary
+                InstallRunResult.Failed -> MaterialTheme.colorScheme.error
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
             }
-            IconButton(onClick = onDelete) {
-                Icon(
-                    Icons.Default.Delete,
-                    contentDescription = stringResource(R.string.history_delete),
-                    tint = MaterialTheme.colorScheme.error,
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                // Status dot
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(resultColor)
                 )
+                Column {
+                    Text(
+                        text = entry.profileId ?: stringResource(R.string.history_payload),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    val resultLabel = when (entry.result) {
+                        InstallRunResult.Succeeded -> stringResource(R.string.history_succeeded)
+                        InstallRunResult.Failed    -> stringResource(R.string.history_failed)
+                        InstallRunResult.Running   -> stringResource(R.string.history_running)
+                        null -> if (entry.completedAtMillis == null)
+                            stringResource(R.string.history_running)
+                        else
+                            stringResource(R.string.history_completed)
+                    }
+                    Text(
+                        text = resultLabel,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = resultColor,
+                    )
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+                IconButton(onClick = onDelete) {
+                    Icon(
+                        Icons.Rounded.Delete,
+                        contentDescription = stringResource(R.string.history_delete),
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
             }
         }
 
-        if (expanded && entry.log.isNotBlank()) {
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = stringResource(R.string.history_log),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        AnimatedVisibility(
+            visible = expanded && entry.log.isNotBlank(),
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically(),
+        ) {
             Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 4.dp),
-                shape = RoundedCornerShape(8.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                shape = MaterialTheme.shapes.small,
+                color = MaterialTheme.colorScheme.surfaceContainerHighest,
             ) {
-                Text(
-                    text = entry.log,
-                    modifier = Modifier.padding(8.dp),
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 11.sp,
-                    lineHeight = 16.sp,
-                )
+                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = stringResource(R.string.history_log),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = entry.log,
+                        fontFamily = FontFamily.Monospace,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
             }
         }
     }
@@ -716,22 +937,28 @@ fun SettingsScreen(
     onAutoRerootChange: (Boolean) -> Unit,
     localPayloadMode: Boolean,
     onLocalPayloadModeChange: (Boolean) -> Unit,
-    accentColor: String,
-    onAccentColorChange: (String) -> Unit,
-    themeMode: String,
-    onThemeModeChange: (String) -> Unit,
+    accentColor: AccentColor,
+    onAccentColorChange: (AccentColor) -> Unit,
+    themeMode: AppThemeMode,
+    onThemeModeChange: (AppThemeMode) -> Unit,
 ) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(0.dp),
     ) {
-        Text(stringResource(R.string.settings), style = MaterialTheme.typography.titleLarge)
+        // Title
+        Text(
+            stringResource(R.string.settings),
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
+        )
+        HorizontalDivider()
 
         // Advanced section
-        SectionHeader(stringResource(R.string.advanced))
+        SectionHeader(title = stringResource(R.string.advanced), icon = Icons.Rounded.Tune)
         SwitchPreference(
             title = stringResource(R.string.advanced_mode),
             subtitle = stringResource(R.string.advanced_mode_description),
@@ -751,8 +978,10 @@ fun SettingsScreen(
             onCheckedChange = onAutoRerootChange,
         )
 
+        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+
         // Local payload section
-        SectionHeader(stringResource(R.string.local_payload_card_title))
+        SectionHeader(title = stringResource(R.string.local_payload_card_title), icon = Icons.Rounded.FolderOpen)
         SwitchPreference(
             title = stringResource(R.string.local_payload_mode),
             subtitle = stringResource(R.string.local_payload_mode_description),
@@ -760,44 +989,76 @@ fun SettingsScreen(
             onCheckedChange = onLocalPayloadModeChange,
         )
 
-        // Appearance section
-        SectionHeader(stringResource(R.string.appearance))
-        Text(
-            text = stringResource(R.string.material_color),
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Medium,
-        )
-        Text(
-            text = stringResource(R.string.material_color_description),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        ColorSelector(
-            selected = accentColor,
-            onSelect = onAccentColorChange,
-        )
+        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
 
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = "Theme",
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Medium,
-        )
-        ThemeSelector(
-            selected = themeMode,
-            onSelect = onThemeModeChange,
-        )
+        // Appearance section
+        SectionHeader(title = stringResource(R.string.appearance), icon = Icons.Rounded.Palette)
+
+        // Color picker
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.material_color),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = stringResource(R.string.material_color_description),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            AccentColorPicker(
+                selected = accentColor,
+                onSelect = onAccentColorChange,
+            )
+        }
+
+        // Theme picker
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.theme_title),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+            )
+            ThemePicker(
+                selected = themeMode,
+                onSelect = onThemeModeChange,
+            )
+        }
     }
 }
 
 @Composable
-fun SectionHeader(title: String) {
-    Text(
-        text = title,
-        style = MaterialTheme.typography.labelLarge,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(top = 8.dp),
-    )
+fun SectionHeader(title: String, icon: ImageVector) {
+    Row(
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(16.dp),
+        )
+        Text(
+            text = title,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
 }
 
 @Composable
@@ -811,11 +1072,11 @@ fun SwitchPreference(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onCheckedChange(!checked) }
-            .padding(vertical = 8.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Column(modifier = Modifier.weight(1f)) {
+        Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
             Text(title, style = MaterialTheme.typography.bodyMedium)
             Text(
                 subtitle,
@@ -823,65 +1084,82 @@ fun SwitchPreference(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Switch(checked = checked, onCheckedChange = null)
     }
 }
 
 @Composable
-fun ColorSelector(selected: String, onSelect: (String) -> Unit) {
-    val colors = listOf(
-        "dynamic" to stringResource(R.string.color_dynamic),
-        "blue" to stringResource(R.string.color_blue),
-        "green" to stringResource(R.string.color_green),
-        "orange" to stringResource(R.string.color_orange),
-        "violet" to stringResource(R.string.color_violet),
+fun AccentColorPicker(selected: AccentColor, onSelect: (AccentColor) -> Unit) {
+    val colorMap: List<Pair<AccentColor, Color?>> = listOf(
+        AccentColor.Dynamic    to null,
+        AccentColor.Blue       to Color(0xFF415F91),
+        AccentColor.Violet     to Color(0xFF6750A4),
+        AccentColor.Green      to Color(0xFF356A35),
+        AccentColor.Orange     to Color(0xFF8B4F23),
+        AccentColor.Purple     to Color(0xFF7B3FA0),
+        AccentColor.Red        to Color(0xFFB3261E),
+        AccentColor.Pink       to Color(0xFF9C27B0),
+        AccentColor.Teal       to Color(0xFF00695C),
+        AccentColor.Yellow     to Color(0xFFF9A825),
+        AccentColor.Monochrome to Color(0xFF757575),
     )
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        colors.forEach { (key, label) ->
-            FilterChip(
-                selected = selected == key,
-                onClick = { onSelect(key) },
-                label = { Text(label) },
-            )
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = PaddingValues(horizontal = 2.dp),
+    ) {
+        items(colorMap) { (accent, swatch) ->
+            val isSelected = selected == accent
+            val borderColor = if (isSelected)
+                MaterialTheme.colorScheme.primary
+            else
+                Color.Transparent
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .border(2.dp, borderColor, CircleShape)
+                    .background(
+                        if (swatch != null) swatch
+                        else MaterialTheme.colorScheme.primaryContainer
+                    )
+                    .clickable { onSelect(accent) },
+                contentAlignment = Alignment.Center,
+            ) {
+                if (swatch == null) {
+                    // "Dynamic" chip — show small auto icon
+                    Icon(
+                        imageVector = Icons.Rounded.AutoAwesome,
+                        contentDescription = accent.name,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(16.dp),
+                    )
+                } else if (isSelected) {
+                    Icon(
+                        imageVector = Icons.Rounded.Check,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
-fun ThemeSelector(selected: String, onSelect: (String) -> Unit) {
-    val themes = listOf(
-        "system" to stringResource(R.string.theme_system),
-        "light" to stringResource(R.string.theme_light),
-        "dark" to stringResource(R.string.theme_dark),
+fun ThemePicker(selected: AppThemeMode, onSelect: (AppThemeMode) -> Unit) {
+    val options = listOf(
+        AppThemeMode.System to stringResource(R.string.theme_system),
+        AppThemeMode.Light  to stringResource(R.string.theme_light),
+        AppThemeMode.Dark   to stringResource(R.string.theme_dark),
     )
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        themes.forEach { (key, label) ->
+        options.forEach { (mode, label) ->
             FilterChip(
-                selected = selected == key,
-                onClick = { onSelect(key) },
+                selected = selected == mode,
+                onClick = { onSelect(mode) },
                 label = { Text(label) },
             )
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// App theme wrapper — delegates to whatever theme the app already has
-// ---------------------------------------------------------------------------
-
-@Composable
-fun AppTheme(
-    accentColor: String,
-    themeMode: String,
-    content: @Composable () -> Unit,
-) {
-    val isDark = when (themeMode) {
-        "dark" -> true
-        "light" -> false
-        else -> androidx.compose.foundation.isSystemInDarkTheme()
-    }
-    MaterialTheme(
-        colorScheme = if (isDark) darkColorScheme() else lightColorScheme(),
-        content = content,
-    )
 }
