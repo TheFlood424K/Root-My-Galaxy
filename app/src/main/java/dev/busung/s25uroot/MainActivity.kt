@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -196,6 +197,15 @@ fun BottomNavBar(navController: NavHostController) {
 
 // ---------------------------------------------------------------------------
 // Overview screen
+//
+// Layout:
+//   Column (fillMaxSize)
+//   ├── scrollable top section (weight=0, intrinsic height)
+//   │     device card, ksu card, profile picker, steps card
+//   ├── sticky progress/action card (weight=0, always visible while busy)
+//   └── collapsible log panel (weight=1f when expanded, else 0)
+//
+// This guarantees the progress bar is never pushed off-screen by log output.
 // ---------------------------------------------------------------------------
 
 @Composable
@@ -209,165 +219,107 @@ fun OverviewScreen(
 ) {
     var showProfileSheet by remember { mutableStateOf(false) }
 
+    // Auto-expand log on failure so the user sees the error immediately.
+    // Collapse again whenever a new session starts (busy goes true).
+    var logExpanded by remember { mutableStateOf(false) }
+    LaunchedEffect(uiState.busy) {
+        if (uiState.busy) logExpanded = false
+    }
+    LaunchedEffect(uiState.phase) {
+        if (uiState.phase == InstallPhase.Failed) logExpanded = true
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .padding(horizontal = 16.dp),
     ) {
-        // ── Device info ───────────────────────────────────────────────────
-        uiState.device?.let { device ->
-            DeviceCard(
-                device = device,
-                androidVersion = uiState.androidVersion ?: "",
-                securityPatch = uiState.securityPatch ?: "",
-            )
-        }
 
-        // ── KernelSU status ───────────────────────────────────────────────
-        KernelSuCard(isRooted = uiState.isRooted, kernelSuVersion = uiState.kernelSuVersion)
-
-        // ── Profile picker ────────────────────────────────────────────────
-        OutlinedCard(
-            modifier = Modifier.fillMaxWidth(),
-            onClick = { onLoadCatalog(); showProfileSheet = true },
+        // ── Scrollable info cards (shrink-to-fit, never takes more than needed) ──
+        Column(
+            modifier = Modifier
+                .verticalScroll(rememberScrollState())
+                .padding(top = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Row(
-                modifier = Modifier.padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.PhoneAndroid,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = stringResource(R.string.select_device_title),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        text = uiState.selectedProfile?.displayName
-                            ?: stringResource(R.string.select_device_description),
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    uiState.selectedProfile?.let {
-                        Text(
-                            text = it.supportedModels,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                Icon(
-                    imageVector = Icons.Rounded.ChevronRight,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            uiState.device?.let { device ->
+                DeviceCard(
+                    device = device,
+                    androidVersion = uiState.androidVersion ?: "",
+                    securityPatch = uiState.securityPatch ?: "",
                 )
             }
-        }
 
-        // ── Steps ─────────────────────────────────────────────────────────
-        StepsCard(phase = uiState.phase)
+            KernelSuCard(isRooted = uiState.isRooted, kernelSuVersion = uiState.kernelSuVersion)
 
-        // ── Progress card (only shown while busy) ─────────────────────────
-        AnimatedVisibility(
-            visible = uiState.busy,
-            enter = fadeIn() + expandVertically(),
-            exit = fadeOut() + shrinkVertically(),
-        ) {
-            Card(
+            OutlinedCard(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                ),
+                onClick = { onLoadCatalog(); showProfileSheet = true },
             ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
+                    Icon(
+                        imageVector = Icons.Rounded.PhoneAndroid,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = uiState.statusMessage,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.weight(1f),
+                            text = stringResource(R.string.select_device_title),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            text = uiState.selectedProfile?.displayName
+                                ?: stringResource(R.string.select_device_description),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        uiState.progress?.let { p ->
+                        uiState.selectedProfile?.let {
                             Text(
-                                text = "${(p * 100).toInt()}%",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                text = it.supportedModels,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         }
                     }
-                    if (uiState.progress != null) {
-                        LinearProgressIndicator(
-                            progress = { uiState.progress },
-                            modifier = Modifier.fillMaxWidth(),
-                            color = MaterialTheme.colorScheme.primary,
-                            trackColor = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.2f),
-                        )
-                    } else {
-                        LinearProgressIndicator(
-                            modifier = Modifier.fillMaxWidth(),
-                            color = MaterialTheme.colorScheme.primary,
-                            trackColor = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.2f),
-                        )
-                    }
-                }
-            }
-        }
-
-        // ── Action button ─────────────────────────────────────────────────
-        when {
-            uiState.phase == InstallPhase.Done -> {
-                FilledTonalButton(
-                    onClick = {},
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = false,
-                ) {
                     Icon(
-                        Icons.Rounded.Check,
+                        imageVector = Icons.Rounded.ChevronRight,
                         contentDescription = null,
-                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Spacer(Modifier.width(6.dp))
-                    Text(stringResource(R.string.action_done))
                 }
             }
-            uiState.busy -> {
-                OutlinedButton(
-                    onClick = onStopSession,
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text(stringResource(R.string.action_cancel)) }
-            }
-            else -> {
-                Button(
-                    onClick = onStartRoot,
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text(stringResource(R.string.install_tap_start)) }
-            }
+
+            StepsCard(phase = uiState.phase)
+
+            Spacer(Modifier.height(4.dp))
         }
 
-        // ── Log output ────────────────────────────────────────────────────
+        // ── Sticky progress + action card (always in viewport) ────────────
+        StickyProgressCard(
+            uiState = uiState,
+            onStartRoot = onStartRoot,
+            onStopSession = onStopSession,
+        )
+
+        // ── Log panel — fills remaining vertical space, scrollable inside ─
         if (uiState.log.isNotBlank()) {
-            LogCard(log = uiState.log)
+            Spacer(Modifier.height(8.dp))
+            LogPanel(
+                log = uiState.log,
+                expanded = logExpanded,
+                onToggle = { logExpanded = !logExpanded },
+                modifier = if (logExpanded) Modifier.weight(1f) else Modifier,
+            )
+            Spacer(Modifier.height(12.dp))
         }
     }
 
@@ -380,6 +332,209 @@ fun OverviewScreen(
             },
             onDismiss = { showProfileSheet = false },
         )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sticky progress + action card
+// ---------------------------------------------------------------------------
+
+@Composable
+fun StickyProgressCard(
+    uiState: InstallUiState,
+    onStartRoot: () -> Unit,
+    onStopSession: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = when {
+                uiState.phase == InstallPhase.Done   -> MaterialTheme.colorScheme.primaryContainer
+                uiState.phase == InstallPhase.Failed -> MaterialTheme.colorScheme.errorContainer
+                uiState.busy                         -> MaterialTheme.colorScheme.secondaryContainer
+                else                                 -> MaterialTheme.colorScheme.surfaceContainerHigh
+            },
+        ),
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            // Status row: message + percentage
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = uiState.statusMessage,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = when {
+                        uiState.phase == InstallPhase.Done   -> MaterialTheme.colorScheme.onPrimaryContainer
+                        uiState.phase == InstallPhase.Failed -> MaterialTheme.colorScheme.onErrorContainer
+                        else                                 -> MaterialTheme.colorScheme.onSecondaryContainer
+                    },
+                    modifier = Modifier.weight(1f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                uiState.progress?.let { p ->
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "${(p * 100).toInt()}%",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                }
+            }
+
+            // Progress bar — always rendered while busy or done
+            when {
+                uiState.progress != null -> LinearProgressIndicator(
+                    progress = { uiState.progress },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.15f),
+                )
+                uiState.busy -> LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.15f),
+                )
+                else -> LinearProgressIndicator(
+                    progress = { 0f },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+                )
+            }
+
+            // Action button
+            when {
+                uiState.phase == InstallPhase.Done -> FilledTonalButton(
+                    onClick = {},
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = false,
+                ) {
+                    Icon(Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(R.string.action_done))
+                }
+                uiState.busy -> OutlinedButton(
+                    onClick = onStopSession,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(stringResource(R.string.action_cancel)) }
+                else -> Button(
+                    onClick = onStartRoot,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(stringResource(R.string.install_tap_start)) }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Log panel — fixed-height, internally scrollable, collapsible
+// ---------------------------------------------------------------------------
+
+@Composable
+fun LogPanel(
+    log: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val listState = rememberLazyListState()
+    val lines = remember(log) { log.lines() }
+
+    // Auto-scroll to the latest line when new content arrives and panel is expanded
+    LaunchedEffect(lines.size, expanded) {
+        if (expanded && lines.isNotEmpty()) {
+            listState.animateScrollToItem(lines.lastIndex)
+        }
+    }
+
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+        ),
+    ) {
+        Column {
+            // Header row — always visible, tap to toggle
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onToggle)
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Terminal,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = stringResource(R.string.history_log),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = "(${lines.size} lines)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                    )
+                }
+                Icon(
+                    imageVector = if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                    contentDescription = if (expanded) "Collapse log" else "Expand log",
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            // Log body — only rendered when expanded, scrolls internally
+            AnimatedVisibility(
+                visible = expanded,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically(),
+            ) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(1.dp),
+                ) {
+                    items(lines) { line ->
+                        Text(
+                            text = line,
+                            fontFamily = FontFamily.Monospace,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = when {
+                                line.startsWith("[!]") || line.startsWith("error", ignoreCase = true) ->
+                                    MaterialTheme.colorScheme.error
+                                line.startsWith("[+]") || line.startsWith("[*]") ->
+                                    MaterialTheme.colorScheme.primary
+                                else ->
+                                    MaterialTheme.colorScheme.onSurface
+                            },
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -569,30 +724,6 @@ fun StepRow(
 }
 
 @Composable
-fun LogCard(log: String) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-        ),
-    ) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(
-                text = stringResource(R.string.history_log),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                text = log,
-                fontFamily = FontFamily.Monospace,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-        }
-    }
-}
-
-@Composable
 fun InfoRow(label: String, value: String) {
     Row(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -755,7 +886,6 @@ fun HistoryScreen(
     onDeleteAll: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
-        // Header row
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -846,7 +976,6 @@ fun HistoryEntryItem(entry: InstallHistoryEntry, onDelete: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                // Status dot
                 Box(
                     modifier = Modifier
                         .size(8.dp)
@@ -925,8 +1054,6 @@ fun HistoryEntryItem(entry: InstallHistoryEntry, onDelete: () -> Unit) {
 
 // ---------------------------------------------------------------------------
 // Settings screen
-// SettingsScreen, AccentColorPicker, and ThemePicker all use String to match
-// the ViewModel's StateFlow<String> API. Enum conversion is done internally.
 // ---------------------------------------------------------------------------
 
 @Composable
@@ -950,7 +1077,6 @@ fun SettingsScreen(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(0.dp),
     ) {
-        // Title
         Text(
             stringResource(R.string.settings),
             style = MaterialTheme.typography.titleLarge,
@@ -959,7 +1085,6 @@ fun SettingsScreen(
         )
         HorizontalDivider()
 
-        // Advanced section
         SectionHeader(title = stringResource(R.string.advanced), icon = Icons.Rounded.Tune)
         SwitchPreference(
             title = stringResource(R.string.advanced_mode),
@@ -982,7 +1107,6 @@ fun SettingsScreen(
 
         HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
 
-        // Local payload section
         SectionHeader(title = stringResource(R.string.local_payload_card_title), icon = Icons.Rounded.FolderOpen)
         SwitchPreference(
             title = stringResource(R.string.local_payload_mode),
@@ -993,10 +1117,8 @@ fun SettingsScreen(
 
         HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
 
-        // Appearance section
         SectionHeader(title = stringResource(R.string.appearance), icon = Icons.Rounded.Palette)
 
-        // Color picker
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1020,7 +1142,6 @@ fun SettingsScreen(
             )
         }
 
-        // Theme picker
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1090,7 +1211,6 @@ fun SwitchPreference(
     }
 }
 
-// AccentColorPicker accepts String (storedValue) and converts internally
 @Composable
 fun AccentColorPicker(selected: String, onSelect: (String) -> Unit) {
     val selectedEnum = AccentColor.fromStoredValue(selected)
@@ -1149,7 +1269,6 @@ fun AccentColorPicker(selected: String, onSelect: (String) -> Unit) {
     }
 }
 
-// ThemePicker accepts String (storedValue) and converts internally
 @Composable
 fun ThemePicker(selected: String, onSelect: (String) -> Unit) {
     val selectedEnum = AppThemeMode.fromStoredValue(selected)
