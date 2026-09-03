@@ -286,3 +286,93 @@ Java_dev_busung_s25uroot_NativeProbe_isKernelSuActive(JNIEnv *env,
   }
   return JNI_FALSE;
 }
+
+/*
+ * getProcessSignal(pid)
+ *
+ * Reads /proc/<pid>/stat and returns the exit-signal field (field index 7,
+ * 0-based after the comm field).  Returns 0 if the process has not been
+ * signalled, -1 if the stat file cannot be read or parsed.
+ *
+ * The /proc/<pid>/stat format (man proc(5)) has the comm field wrapped in
+ * parentheses; we skip past the last ')' before splitting the remaining
+ * space-delimited fields so embedded spaces in the comm value are handled
+ * correctly.
+ *
+ * Field indices after ')' (0-based from the first space-delimited token
+ * that follows the closing paren):
+ *   0  state
+ *   1  ppid
+ *   2  pgrp
+ *   3  session
+ *   4  tty_nr
+ *   5  tpgid
+ *   6  flags
+ *   7  minflt
+ *   8  cminflt
+ *   9  majflt
+ *  10  cmajflt
+ *  11  utime
+ *  12  stime
+ *  13  cutime
+ *  14  cstime
+ *  15  priority
+ *  16  nice
+ *  17  num_threads
+ *  18  itrealvalue
+ *  19  starttime
+ *  20  vsize
+ *  21  rss
+ *  22  rsslim
+ *  23  startcode
+ *  24  endcode
+ *  25  startstack
+ *  26  kstkesp
+ *  27  kstkeip
+ *  28  signal (pending signal bitmap -- NOT the exit signal)
+ *  29  blocked
+ *  30  sigignore
+ *  31  sigcatch
+ *  32  wchan
+ *  33  nswap
+ *  34  cnswap
+ *  35  exit_signal  <-- THIS is what we want
+ *
+ * So we need the token at index 35 after the closing ')'.
+ */
+JNIEXPORT jint JNICALL
+Java_dev_busung_s25uroot_NativeProbe_getProcessSignal(JNIEnv *env,
+                                                       jobject thiz,
+                                                       jint pid) {
+  (void)env;
+  (void)thiz;
+
+  char path[64];
+  snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
+
+  int fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return -1;
+
+  char buf[1024];
+  ssize_t n = read(fd, buf, sizeof(buf) - 1);
+  close(fd);
+  if (n <= 0) return -1;
+  buf[n] = '\0';
+
+  /* Skip past the closing ')' of the comm field. */
+  char *cursor = strrchr(buf, ')');
+  if (!cursor) return -1;
+  ++cursor; /* point past ')' */
+
+  /* Now tokenise the remaining space-delimited fields. */
+  int field = 0;
+  char *token = strtok(cursor, " \t\n");
+  while (token) {
+    if (field == 35) {
+      return (jint)atoi(token);
+    }
+    ++field;
+    token = strtok(NULL, " \t\n");
+  }
+  return -1;
+}

@@ -84,6 +84,155 @@ data class TargetCatalogUiState(
 
 private data class CommandResult(val code: Int, val output: String)
 
+// ---------------------------------------------------------------------------
+// ProcessDiagnostics
+// ---------------------------------------------------------------------------
+
+/**
+ * Full diagnostic bundle collected from a dead native process.
+ *
+ * @param exitCode   Raw waitpid exit code (0 = clean, non-zero = abnormal).
+ * @param signal     Signal that killed the process, or 0 if not signalled.
+ *                   Populated from /proc/<pid>/stat field 35 via JNI.
+ * @param stderrTail Last [MAX_STDERR_LINES] non-blank lines from the merged
+ *                   stdout/stderr stream captured during the run.
+ * @param linkerErrors Lines from [stderrTail] that look like a dynamic-linker
+ *                   error ("cannot locate symbol", "dlopen failed", etc.).
+ * @param fingerprint Build.FINGERPRINT of the device at the time of failure.
+ */
+data class ProcessDiagnostics(
+    val exitCode: Int,
+    val signal: Int,
+    val stderrTail: List<String>,
+    val linkerErrors: List<String>,
+    val fingerprint: String,
+) {
+    /** Human-readable signal name, e.g. "SIGSEGV (11)". */
+    val signalName: String
+        get() = when (signal) {
+            0    -> "none"
+            1    -> "SIGHUP (1)"
+            2    -> "SIGINT (2)"
+            3    -> "SIGQUIT (3)"
+            4    -> "SIGILL (4)"
+            5    -> "SIGTRAP (5)"
+            6    -> "SIGABRT (6)"
+            7    -> "SIGBUS (7)"
+            8    -> "SIGFPE (8)"
+            9    -> "SIGKILL (9)"
+            10   -> "SIGUSR1 (10)"
+            11   -> "SIGSEGV (11)"
+            12   -> "SIGUSR2 (12)"
+            13   -> "SIGPIPE (13)"
+            14   -> "SIGALRM (14)"
+            15   -> "SIGTERM (15)"
+            16   -> "SIGSTKFLT (16)"
+            17   -> "SIGCHLD (17)"
+            18   -> "SIGCONT (18)"
+            19   -> "SIGSTOP (19)"
+            20   -> "SIGTSTP (20)"
+            21   -> "SIGTTIN (21)"
+            22   -> "SIGTTOU (22)"
+            23   -> "SIGURG (23)"
+            24   -> "SIGXCPU (24)"
+            25   -> "SIGXFSZ (25)"
+            26   -> "SIGVTALRM (26)"
+            27   -> "SIGPROF (27)"
+            28   -> "SIGWINCH (28)"
+            29   -> "SIGIO (29)"
+            30   -> "SIGPWR (30)"
+            31   -> "SIGSYS (31)"
+            else -> "signal $signal"
+        }
+
+    /**
+     * Formats all fields into a multi-line diagnostic block suitable for
+     * direct inclusion in the in-app error message and the install log.
+     */
+    fun format(): String = buildString {
+        appendLine("── Process diagnostics ──────────────────")
+        appendLine("Exit status : $exitCode")
+        if (signal != 0) appendLine("Signal      : $signalName")
+        appendLine("Fingerprint : $fingerprint")
+        if (linkerErrors.isNotEmpty()) {
+            appendLine("Linker errors:")
+            linkerErrors.forEach { appendLine("  $it") }
+        }
+        if (stderrTail.isNotEmpty()) {
+            appendLine("stderr tail:")
+            stderrTail.forEach { appendLine("  $it") }
+        }
+        append("─────────────────────────────────────────")
+    }
+
+    companion object {
+        /** Patterns that indicate a dynamic-linker failure in stderr output. */
+        private val LINKER_PATTERNS = listOf(
+            Regex("""cannot locate symbol""", RegexOption.IGNORE_CASE),
+            Regex("""dlopen failed""", RegexOption.IGNORE_CASE),
+            Regex("""undefined symbol""", RegexOption.IGNORE_CASE),
+            Regex("""CANNOT LINK EXECUTABLE""", RegexOption.IGNORE_CASE),
+            Regex("""could not load""", RegexOption.IGNORE_CASE),
+            Regex("""soname""", RegexOption.IGNORE_CASE),
+            Regex("""library.*not found""", RegexOption.IGNORE_CASE),
+            Regex("""no such file or directory""", RegexOption.IGNORE_CASE),
+        )
+
+        private const val MAX_STDERR_LINES = 20
+
+        /**
+         * Collects diagnostics from a process that has already exited.
+         *
+         * @param process    The dead [Process] object.
+         * @param capturedOutput  Everything already drained from the process
+         *                   stdout/stderr stream into a [StringBuilder].
+         * @param stripAnsi  Function to strip ANSI escape codes.
+         */
+        fun collect(
+            process: Process,
+            capturedOutput: StringBuilder,
+            stripAnsi: (String) -> String,
+        ): ProcessDiagnostics {
+            // Drain any remaining bytes the caller may not have read yet.
+            runCatching {
+                val avail = process.inputStream.available()
+                if (avail > 0) {
+                    capturedOutput.append(
+                        process.inputStream.readNBytes(minOf(avail, 65_536))
+                            .toString(Charsets.UTF_8)
+                    )
+                }
+            }
+
+            val exitCode = runCatching { process.waitFor() }.getOrDefault(-1)
+
+            // Read the exit signal from /proc/<pid>/stat via JNI.
+            // Process.pid() is available from API 26; our minSdk is 33.
+            val signal = runCatching {
+                NativeProbe.getProcessSignal(process.pid())
+            }.getOrDefault(-1).let { if (it < 0) 0 else it }
+
+            val rawOutput = stripAnsi(capturedOutput.toString())
+            val tailLines = rawOutput
+                .lines()
+                .filter { it.isNotBlank() }
+                .takeLast(MAX_STDERR_LINES)
+
+            val linkerErrors = tailLines.filter { line ->
+                LINKER_PATTERNS.any { it.containsMatchIn(line) }
+            }
+
+            return ProcessDiagnostics(
+                exitCode = exitCode,
+                signal = signal,
+                stderrTail = tailLines,
+                linkerErrors = linkerErrors,
+                fingerprint = Build.FINGERPRINT,
+            )
+        }
+    }
+}
+
 internal fun stagedFileIsCurrent(staged: File, source: File): Boolean {
     if (!staged.exists()) return false
     val stagedDigest = sha256OrNull(staged) ?: return false
@@ -106,26 +255,16 @@ private fun sha256OrNull(file: File): String? = runCatching {
 // ---------------------------------------------------------------------------
 // Progress layout
 // ---------------------------------------------------------------------------
-//
-// The overall install is divided into weighted segments so the single
-// progress bar moves smoothly from 0 % to 100 % across all phases:
-//
-//   0 – 5 %    Checking / Shizuku pre-flight
-//   5 – 50 %   Downloading exploit  (file download mapped 0–1 → 5–50 %)
-//  50 – 85 %   Downloading KernelSU (file download mapped 0–1 → 50–85 %)
-//  85 – 95 %   Exploiting           (indeterminate pulse inside that band)
-//  95 – 99 %   LoadingKernelSu
-// 100 %        Installed / Done
 
-private const val PROGRESS_CHECKING_END   = 0.05f
-private const val PROGRESS_EXPLOIT_START  = 0.05f
-private const val PROGRESS_EXPLOIT_END    = 0.50f
-private const val PROGRESS_KSU_START      = 0.50f
-private const val PROGRESS_KSU_END        = 0.85f
+private const val PROGRESS_CHECKING_END     = 0.05f
+private const val PROGRESS_EXPLOIT_START    = 0.05f
+private const val PROGRESS_EXPLOIT_END      = 0.50f
+private const val PROGRESS_KSU_START        = 0.50f
+private const val PROGRESS_KSU_END          = 0.85f
 private const val PROGRESS_EXPLOITING_START = 0.85f
 private const val PROGRESS_EXPLOITING_END   = 0.95f
-private const val PROGRESS_LOADING_KSU    = 0.97f
-private const val PROGRESS_DONE           = 1.00f
+private const val PROGRESS_LOADING_KSU      = 0.97f
+private const val PROGRESS_DONE             = 1.00f
 
 // ---------------------------------------------------------------------------
 // ViewModel
@@ -136,21 +275,17 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     private val repository = PayloadRepository(application)
     private val historyStore = InstallHistoryStore(application)
 
-    // -----------------------------------------------------------------------
-    // Internal mutable state
-    // -----------------------------------------------------------------------
-
     private val mutableUiState = MutableStateFlow(InstallUiState())
     private val mutableHistory = MutableStateFlow(historyStore.closeInterruptedRuns())
     private val mutableTargetCatalog = MutableStateFlow(TargetCatalogUiState())
 
-    private val mutableAccentColorEnum = MutableStateFlow(AppPreferences.accentColor(app))
-    private val mutableThemeModeEnum = MutableStateFlow(AppPreferences.themeMode(app))
-    private val mutableAdvancedMode = MutableStateFlow(AppPreferences.advancedMode(app))
-    private val mutableShizukuMode = MutableStateFlow(AppPreferences.shizukuMode(app))
-    private val mutableAutoReroot = MutableStateFlow(AppPreferences.autoReroot(app))
+    private val mutableAccentColorEnum  = MutableStateFlow(AppPreferences.accentColor(app))
+    private val mutableThemeModeEnum    = MutableStateFlow(AppPreferences.themeMode(app))
+    private val mutableAdvancedMode     = MutableStateFlow(AppPreferences.advancedMode(app))
+    private val mutableShizukuMode      = MutableStateFlow(AppPreferences.shizukuMode(app))
+    private val mutableAutoReroot       = MutableStateFlow(AppPreferences.autoReroot(app))
     private val mutableLocalPayloadMode = MutableStateFlow(AppPreferences.localPayloadMode(app))
-    private val mutableDebugLog = MutableStateFlow(AppPreferences.debugLog(app))
+    private val mutableDebugLog         = MutableStateFlow(AppPreferences.debugLog(app))
 
     private var discoveryJob: Job? = null
     private var installJob: Job? = null
@@ -159,10 +294,6 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
 
     @Volatile private var activeRunShizuku: Boolean? = null
     @Volatile private var activeRunRebootUserspace: Boolean? = null
-
-    // -----------------------------------------------------------------------
-    // Public StateFlow API
-    // -----------------------------------------------------------------------
 
     val uiState: StateFlow<InstallUiState> = mutableUiState.asStateFlow()
     val installHistory: StateFlow<List<InstallHistoryEntry>> = mutableHistory.asStateFlow()
@@ -175,35 +306,30 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         .map { it.storedValue }
         .stateIn(viewModelScope, SharingStarted.Eagerly, mutableThemeModeEnum.value.storedValue)
 
-    val advancedMode: StateFlow<Boolean> = mutableAdvancedMode.asStateFlow()
-    val shizukuMode: StateFlow<Boolean> = mutableShizukuMode.asStateFlow()
-    val autoReroot: StateFlow<Boolean> = mutableAutoReroot.asStateFlow()
+    val advancedMode: StateFlow<Boolean>     = mutableAdvancedMode.asStateFlow()
+    val shizukuMode: StateFlow<Boolean>      = mutableShizukuMode.asStateFlow()
+    val autoReroot: StateFlow<Boolean>       = mutableAutoReroot.asStateFlow()
     val localPayloadMode: StateFlow<Boolean> = mutableLocalPayloadMode.asStateFlow()
-    val debugLog: StateFlow<Boolean> = mutableDebugLog.asStateFlow()
+    val debugLog: StateFlow<Boolean>         = mutableDebugLog.asStateFlow()
 
-    // Legacy aliases
-    val state: StateFlow<InstallUiState> = uiState
+    val state: StateFlow<InstallUiState>          = uiState
     val history: StateFlow<List<InstallHistoryEntry>> = installHistory
     val targetCatalog: StateFlow<TargetCatalogUiState> = mutableTargetCatalog.asStateFlow()
 
-    // -----------------------------------------------------------------------
-    // Init
-    // -----------------------------------------------------------------------
-
     init {
         viewModelScope.launch(Dispatchers.IO) {
-            val snap = runCatching { DeviceSnapshot.current() }.getOrNull()
+            val snap   = runCatching { DeviceSnapshot.current() }.getOrNull()
             val rooted = runCatching { NativeProbe.isKernelSuActive() }.getOrDefault(false)
             mutableUiState.value = mutableUiState.value.copy(
-                device = snap,
-                isRooted = rooted,
+                device         = snap,
+                isRooted       = rooted,
                 kernelSuVersion = null,
                 androidVersion = snap?.androidRelease,
-                securityPatch = Build.VERSION.SECURITY_PATCH,
-                phase = InstallPhase.Ready,
-                statusMessage = app.getString(R.string.install_preparing),
-                progress = null,
-                progressLabel = null,
+                securityPatch  = Build.VERSION.SECURITY_PATCH,
+                phase          = InstallPhase.Ready,
+                statusMessage  = app.getString(R.string.install_preparing),
+                progress       = null,
+                progressLabel  = null,
             )
         }
     }
@@ -215,8 +341,8 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     fun startRoot(profile: TargetProfile? = null) = install(profile)
     fun stopSession() = cancel()
 
-    fun deleteHistoryEntry(id: String) = deleteHistoryEntries(setOf(id))
-    fun deleteAllHistoryEntries() = deleteHistoryEntries(mutableHistory.value.map { it.id }.toSet())
+    fun deleteHistoryEntry(id: String)  = deleteHistoryEntries(setOf(id))
+    fun deleteAllHistoryEntries()       = deleteHistoryEntries(mutableHistory.value.map { it.id }.toSet())
 
     fun selectProfile(profile: TargetProfile?) {
         mutableUiState.value = mutableUiState.value.copy(selectedProfile = profile)
@@ -230,27 +356,11 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         mutableUiState.value = mutableUiState.value.copy(pendingInstallRequest = null)
     }
 
-    // Settings setters --------------------------------------------------------
-
-    fun setAdvancedMode(enabled: Boolean) {
-        AppPreferences.setAdvancedMode(app, enabled)
-        mutableAdvancedMode.value = enabled
-    }
-
-    fun setShizukuMode(enabled: Boolean) {
-        AppPreferences.setShizukuMode(app, enabled)
-        mutableShizukuMode.value = enabled
-    }
-
-    fun setAutoReroot(enabled: Boolean) {
-        AppPreferences.setAutoReroot(app, enabled)
-        mutableAutoReroot.value = enabled
-    }
-
-    fun setLocalPayloadMode(enabled: Boolean) {
-        AppPreferences.setLocalPayloadMode(app, enabled)
-        mutableLocalPayloadMode.value = enabled
-    }
+    fun setAdvancedMode(enabled: Boolean)     { AppPreferences.setAdvancedMode(app, enabled);     mutableAdvancedMode.value = enabled }
+    fun setShizukuMode(enabled: Boolean)      { AppPreferences.setShizukuMode(app, enabled);      mutableShizukuMode.value = enabled }
+    fun setAutoReroot(enabled: Boolean)       { AppPreferences.setAutoReroot(app, enabled);       mutableAutoReroot.value = enabled }
+    fun setLocalPayloadMode(enabled: Boolean) { AppPreferences.setLocalPayloadMode(app, enabled); mutableLocalPayloadMode.value = enabled }
+    fun setDebugLog(enabled: Boolean)         { AppPreferences.setDebugLog(app, enabled);         mutableDebugLog.value = enabled }
 
     fun setAccentColor(color: String) {
         val enum = AccentColor.fromStoredValue(color)
@@ -262,11 +372,6 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         val enum = AppThemeMode.fromStoredValue(mode)
         AppPreferences.setThemeMode(app, enum)
         mutableThemeModeEnum.value = enum
-    }
-
-    fun setDebugLog(enabled: Boolean) {
-        AppPreferences.setDebugLog(app, enabled)
-        mutableDebugLog.value = enabled
     }
 
     // -----------------------------------------------------------------------
@@ -291,9 +396,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         mutableTargetCatalog.value = TargetCatalogUiState()
     }
 
-    fun setLocalPayloadUris(uris: Map<String, Uri>) {
-        localPayloadUris = uris
-    }
+    fun setLocalPayloadUris(uris: Map<String, Uri>) { localPayloadUris = uris }
 
     fun installByProfileId(profileId: String?, rebootUserspace: Boolean? = null) {
         if (installJob?.isActive == true) return
@@ -337,40 +440,22 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 activeRunRebootUserspace = rebootUserspace
                 activeRunShizuku = AppPreferences.shizukuMode(app)
 
-                // ── 1. Shizuku pre-flight ─────────────────────────────────
-                setPhase(
-                    InstallPhase.Checking,
-                    app.getString(R.string.install_preparing),
-                    PROGRESS_CHECKING_END * 0.5f,
-                )
+                setPhase(InstallPhase.Checking, app.getString(R.string.install_preparing), PROGRESS_CHECKING_END * 0.5f)
                 if (shizukuEnabled()) {
                     appendLog(app.getString(R.string.log_shizuku_prepare))
-                    if (!ShizukuController.isRunning() && !ShizukuController.pingUntilRunning()) {
+                    if (!ShizukuController.isRunning() && !ShizukuController.pingUntilRunning())
                         error(app.getString(R.string.error_shizuku_unavailable))
-                    }
-                    if (!ShizukuController.isGranted() && !ShizukuController.requestPermission()) {
+                    if (!ShizukuController.isGranted() && !ShizukuController.requestPermission())
                         error(app.getString(R.string.error_shizuku_permission))
-                    }
                     appendLog(app.getString(R.string.log_shizuku_permission))
                 }
-                setPhase(
-                    InstallPhase.Checking,
-                    app.getString(R.string.install_preparing),
-                    PROGRESS_CHECKING_END,
-                )
+                setPhase(InstallPhase.Checking, app.getString(R.string.install_preparing), PROGRESS_CHECKING_END)
 
-                // ── 2. Resolve & download payloads ────────────────────────
                 val verified = resolvePayloads(profile)
 
-                // ── 3. Exploit with retry ─────────────────────────────────
-                setPhase(
-                    InstallPhase.Exploiting,
-                    app.getString(R.string.install_preparing),
-                    PROGRESS_EXPLOITING_START,
-                )
+                setPhase(InstallPhase.Exploiting, app.getString(R.string.install_preparing), PROGRESS_EXPLOITING_START)
                 executeExploitWithRetry(verified.exploit, verified.profile.requiresFreshP0Session)
 
-                // ── 4. Optionally stage a local KernelSU override ─────────
                 val kernelSuUri = localPayloadUris[PAYLOAD_KERNELSU]
                 val finalPayloads = if (kernelSuUri != null) {
                     repository.stageLocalKernelSu(verified, kernelSuUri) { msg, fraction ->
@@ -383,32 +468,18 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                     verified
                 }
 
-                // ── 5. Install KernelSU ───────────────────────────────────
-                setPhase(
-                    InstallPhase.LoadingKernelSu,
-                    app.getString(R.string.install_preparing),
-                    PROGRESS_LOADING_KSU,
-                )
+                setPhase(InstallPhase.LoadingKernelSu, app.getString(R.string.install_preparing), PROGRESS_LOADING_KSU)
                 installKernelSu(finalPayloads)
 
-                // ── 6. Optional userspace reboot ──────────────────────────
                 if (shouldRebootUserspace()) {
                     appendLog(app.getString(R.string.log_reboot_userspace))
                     runHelper("--reboot-userspace")
                 }
 
-                // ── 7. Refresh root status ────────────────────────────────
                 val nowRooted = runCatching { NativeProbe.isKernelSuActive() }.getOrDefault(true)
-                mutableUiState.value = mutableUiState.value.copy(
-                    isRooted = nowRooted,
-                    kernelSuVersion = null,
-                )
+                mutableUiState.value = mutableUiState.value.copy(isRooted = nowRooted, kernelSuVersion = null)
 
-                setPhase(
-                    InstallPhase.Installed,
-                    app.getString(R.string.log_install_complete),
-                    PROGRESS_DONE,
-                )
+                setPhase(InstallPhase.Installed, app.getString(R.string.log_install_complete), PROGRESS_DONE)
                 finishHistory(InstallRunResult.Succeeded)
             } catch (e: Exception) {
                 val msg = buildString {
@@ -431,30 +502,21 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    /**
-     * Resolves which payload set to use and downloads/stages it.
-     * Emits progress in the [PROGRESS_EXPLOIT_START]–[PROGRESS_KSU_END] band.
-     */
     private suspend fun resolvePayloads(profile: TargetProfile?): VerifiedPayloads {
         val localExploitUri = localPayloadUris[PAYLOAD_EXPLOIT]
 
         return when {
-            // User manually picked an exploit .so file
             localExploitUri != null -> {
-                setPhase(
-                    InstallPhase.Downloading,
-                    app.getString(R.string.install_preparing),
-                    PROGRESS_EXPLOIT_START,
-                )
+                setPhase(InstallPhase.Downloading, app.getString(R.string.install_preparing), PROGRESS_EXPLOIT_START)
                 val snapshot = DeviceSnapshot.current()
                 debugLog("[DBG] Local exploit mode – model=${snapshot.model}  kernel=${snapshot.kernelVersion}")
                 val syntheticProfile = TargetProfile(
-                    profileId = LOCAL_PROFILE_ID,
-                    displayName = "",
-                    models = setOf(snapshot.model),
-                    kernelVersions = setOf(snapshot.kernelVersion),
-                    exploit = RemoteArtifact("", -1L),
-                    kernelSu = RemoteArtifact("", -1L),
+                    profileId              = LOCAL_PROFILE_ID,
+                    displayName            = "",
+                    models                 = setOf(snapshot.model),
+                    kernelVersions         = setOf(snapshot.kernelVersion),
+                    exploit                = RemoteArtifact("", -1L),
+                    kernelSu               = RemoteArtifact("", -1L),
                     requiresFreshP0Session = false,
                 )
                 repository.stageLocalExploit(syntheticProfile, localExploitUri) { msg, fraction ->
@@ -465,13 +527,8 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
 
-            // Caller supplied an explicit profile (e.g. from deep-link or UI selection)
             profile != null -> {
-                setPhase(
-                    InstallPhase.Downloading,
-                    app.getString(R.string.install_preparing),
-                    PROGRESS_EXPLOIT_START,
-                )
+                setPhase(InstallPhase.Downloading, app.getString(R.string.install_preparing), PROGRESS_EXPLOIT_START)
                 debugLog("[DBG] Using explicit profile: id=${profile.profileId}  name=${profile.displayName}")
                 debugLog("[DBG] Profile targets: models=${profile.models}  kernels=${profile.kernelVersions}")
                 updateHistoryProfile(profile.profileId)
@@ -498,43 +555,33 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
 
-            // Auto-detect from device snapshot
             else -> {
-                setPhase(
-                    InstallPhase.Checking,
-                    app.getString(R.string.install_preparing),
-                    PROGRESS_CHECKING_END,
-                )
+                setPhase(InstallPhase.Checking, app.getString(R.string.install_preparing), PROGRESS_CHECKING_END)
                 val snapshot = DeviceSnapshot.current()
-                debugLog("[DBG] Auto-detect – model=${snapshot.model}  " +
+                debugLog(
+                    "[DBG] Auto-detect – model=${snapshot.model}  " +
                     "kernel=${snapshot.kernelVersion}  " +
                     "android=${snapshot.androidRelease}  " +
-                    "patch=${Build.VERSION.SECURITY_PATCH}")
+                    "patch=${Build.VERSION.SECURITY_PATCH}"
+                )
                 val resolved = try {
                     repository.resolveTarget(snapshot)
                 } catch (e: Exception) {
-                    // Surface a clearer message: include device info so the user
-                    // knows whether the issue is an unsupported model/kernel or a
-                    // network/manifest parse failure.
-                    val baseMsg = e.message ?: "No matching profile found"
+                    val baseMsg    = e.message ?: "No matching profile found"
                     val deviceHint = "Device: ${snapshot.model}, kernel ${snapshot.kernelVersion}"
                     mutableUiState.value = mutableUiState.value.copy(
-                        phase = InstallPhase.Ready,
-                        statusMessage = app.getString(R.string.install_preparing),
-                        progress = null,
-                        progressLabel = null,
+                        phase = InstallPhase.Ready, statusMessage = app.getString(R.string.install_preparing),
+                        progress = null, progressLabel = null,
                     )
                     appendLog("[!] Profile lookup failed — $baseMsg ($deviceHint)")
                     throw IllegalStateException("$baseMsg\n$deviceHint", e)
                 }
-                debugLog("[DBG] Matched profile: id=${resolved.profileId}  " +
+                debugLog(
+                    "[DBG] Matched profile: id=${resolved.profileId}  " +
                     "name=${resolved.displayName}  " +
-                    "requiresFreshP0=${resolved.requiresFreshP0Session}")
-                setPhase(
-                    InstallPhase.Downloading,
-                    app.getString(R.string.install_preparing),
-                    PROGRESS_EXPLOIT_START,
+                    "requiresFreshP0=${resolved.requiresFreshP0Session}"
                 )
+                setPhase(InstallPhase.Downloading, app.getString(R.string.install_preparing), PROGRESS_EXPLOIT_START)
                 updateHistoryProfile(resolved.profileId)
                 try {
                     repository.download(resolved) { msg, fraction ->
@@ -561,34 +608,21 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    /**
-     * Maps the flat 0–1 file fraction from [repository.download] onto the
-     * exploit (5–50 %) + KSU (50–85 %) segments.
-     *
-     * The repository downloads exploit first then KSU; we treat the first
-     * file as 0–0.5 of the combined range and the second as 0.5–1.0.
-     *
-     * Because we call this with every buffer chunk we can't tell which file
-     * we're in; instead we track the last emitted overall value and only
-     * advance it (never go backwards within a run), which naturally keeps
-     * the bar moving forward even when the fraction resets between files.
-     */
     private var lastDownloadProgress: Float = PROGRESS_EXPLOIT_START
 
     private fun emitDownloadProgress(fileFraction: Float) {
-        val totalRange = PROGRESS_KSU_END - PROGRESS_EXPLOIT_START      // 0.80
-        val candidate = PROGRESS_EXPLOIT_START + fileFraction * totalRange
-        val next = maxOf(lastDownloadProgress, candidate)
+        val totalRange = PROGRESS_KSU_END - PROGRESS_EXPLOIT_START
+        val candidate  = PROGRESS_EXPLOIT_START + fileFraction * totalRange
+        val next       = maxOf(lastDownloadProgress, candidate)
         lastDownloadProgress = next
         emitProgress(next)
     }
 
-    /** Clamp and publish a raw 0–1 progress value + human-readable label. */
     private fun emitProgress(raw: Float) {
         val clamped = raw.coerceIn(0f, 1f)
-        val pct = (clamped * 100f).roundToInt()
+        val pct     = (clamped * 100f).roundToInt()
         mutableUiState.value = mutableUiState.value.copy(
-            progress = clamped,
+            progress      = clamped,
             progressLabel = "$pct %",
         )
     }
@@ -602,19 +636,16 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         requiresFreshP0Session: Boolean,
     ) {
         val maxAttempts = EXPLOIT_ATTEMPTS.toIntOrNull() ?: 6
-        val bootToken = currentBootToken()
+        val bootToken   = currentBootToken()
         var lastError: Throwable? = null
 
         for (attempt in 1..maxAttempts) {
             val attemptStart = SystemClock.elapsedRealtime()
-            if (attempt > 1) {
-                appendLog("[*] Retrying exploit (attempt $attempt / $maxAttempts)…")
-            }
+            if (attempt > 1) appendLog("[*] Retrying exploit (attempt $attempt / $maxAttempts)…")
             try {
                 executeExploit(payload, requiresFreshP0Session, bootToken, attempt)
-                debugLog("[DBG] Exploit succeeded on attempt $attempt " +
-                    "(${SystemClock.elapsedRealtime() - attemptStart} ms)")
-                return // success
+                debugLog("[DBG] Exploit succeeded on attempt $attempt (${SystemClock.elapsedRealtime() - attemptStart} ms)")
+                return
             } catch (e: ExploitStallException) {
                 val elapsed = SystemClock.elapsedRealtime() - attemptStart
                 appendLog("[!] Attempt $attempt stalled after ${elapsed} ms – ${e.message}; retrying")
@@ -624,9 +655,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
             }
         }
 
-        throw lastError ?: IllegalStateException(
-            app.getString(R.string.error_exploit_timeout)
-        )
+        throw lastError ?: IllegalStateException(app.getString(R.string.error_exploit_timeout))
     }
 
     private suspend fun executeExploit(
@@ -638,51 +667,42 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         val shizuku = shizukuEnabled()
         val logFile = if (shizuku) File(SHIZUKU_LOG_PATH) else File(app.filesDir, "exploit.log")
 
-        if (shizuku) {
-            ShizukuController.exec(arrayOf("rm", "-f", SHIZUKU_LOG_PATH)).waitFor()
-        } else {
-            logFile.delete()
-        }
+        if (shizuku) ShizukuController.exec(arrayOf("rm", "-f", SHIZUKU_LOG_PATH)).waitFor()
+        else logFile.delete()
 
         val helper = helperFile()
-        if (!shizuku) {
-            require(helper.canExecute()) { app.getString(R.string.error_helper_unavailable) }
-        }
+        if (!shizuku) require(helper.canExecute()) { app.getString(R.string.error_helper_unavailable) }
 
         val logPrefix = mutableUiState.value.log
-        val env = buildExploitEnvironment(bootToken, payload, helper, shizuku)
+        val env       = buildExploitEnvironment(bootToken, payload, helper, shizuku)
 
-        debugLog("[DBG] Exploit attempt $attempt — payload=${payload.absolutePath} " +
-            "(${payload.length()} B)  logFile=${logFile.absolutePath}  shizuku=$shizuku")
+        debugLog(
+            "[DBG] Exploit attempt $attempt — payload=${payload.absolutePath} " +
+            "(${payload.length()} B)  logFile=${logFile.absolutePath}  shizuku=$shizuku"
+        )
         debugLog("[DBG] Env: ${env.joinToString("  ")}")
 
         val process = launchExploitProcess(payload, helper, logFile, shizuku, env)
 
-        var lastLogSize = -1L
+        var lastLogSize    = -1L
         var lastLogChangeAt = SystemClock.elapsedRealtime()
-        val startedAt = lastLogChangeAt
-        val earlyOutput = StringBuilder()
+        val startedAt       = lastLogChangeAt
+        val earlyOutput     = StringBuilder()
 
-        // Indeterminate pulse within the Exploiting band (85–95 %)
         var exploitPulse = PROGRESS_EXPLOITING_START
-        val exploitBand = PROGRESS_EXPLOITING_END - PROGRESS_EXPLOITING_START
+        val exploitBand  = PROGRESS_EXPLOITING_END - PROGRESS_EXPLOITING_START
 
         try {
             while (process.isAlive) {
                 drainProcessOutput(process, earlyOutput)
 
                 val logSize = logFile.length()
-                val now = SystemClock.elapsedRealtime()
+                val now     = SystemClock.elapsedRealtime()
 
-                if (logSize != lastLogSize) {
-                    lastLogSize = logSize
-                    lastLogChangeAt = now
-                }
+                if (logSize != lastLogSize) { lastLogSize = logSize; lastLogChangeAt = now }
 
-                val rawLog = logFile.readTextIfPresent()
-                publishExploitLog(logPrefix, rawLog)
+                publishExploitLog(logPrefix, logFile.readTextIfPresent())
 
-                // Advance pulse within the exploiting band (wraps slowly)
                 exploitPulse = PROGRESS_EXPLOITING_START +
                     ((exploitPulse - PROGRESS_EXPLOITING_START + EXPLOIT_PULSE_STEP) % exploitBand)
                 emitProgress(exploitPulse)
@@ -690,48 +710,37 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                 val stallMs = now - lastLogChangeAt
                 val totalMs = now - startedAt
 
-                if (stallMs >= EXPLOIT_STALL_MILLIS) {
-                    throw ExploitStallException(
-                        "${app.getString(R.string.error_exploit_stalled)} (no output for ${stallMs} ms)"
-                    )
-                }
-
-                require(totalMs < EXPLOIT_TOTAL_MILLIS) {
-                    app.getString(R.string.error_exploit_timeout)
-                }
+                if (stallMs >= EXPLOIT_STALL_MILLIS)
+                    throw ExploitStallException("${app.getString(R.string.error_exploit_stalled)} (no output for ${stallMs} ms)")
+                require(totalMs < EXPLOIT_TOTAL_MILLIS) { app.getString(R.string.error_exploit_timeout) }
 
                 delay(LOG_POLL_INTERVAL)
             }
 
             drainProcessOutput(process, earlyOutput)
-            val rawLog = if (shizuku) {
-                File(SHIZUKU_LOG_PATH).readTextIfPresent()
-            } else {
-                logFile.readTextIfPresent()
-            }
+            val rawLog = if (shizuku) File(SHIZUKU_LOG_PATH).readTextIfPresent() else logFile.readTextIfPresent()
             publishExploitLog(logPrefix, rawLog)
 
             val exitCode = process.waitFor()
             if (exitCode != 0) {
-                // Include last 5 lines of the exploit log so the failure reason
-                // is visible directly in the UI without needing adb logcat.
-                val logTail = rawLog.lines()
-                    .filter { it.isNotBlank() }
-                    .takeLast(5)
-                    .joinToString("\n")
-                val earlyDetail = earlyOutput.toString().trim()
-                    .takeIf(String::isNotBlank)?.let { "\nProcess output: $it" } ?: ""
-                val logDetail = logTail
-                    .takeIf(String::isNotBlank)?.let { "\nExploit log:\n$it" } ?: ""
+                // Collect full diagnostics from the dead process.
+                val diag = ProcessDiagnostics.collect(process, earlyOutput, ::stripAnsi)
+                val diagBlock = diag.format()
+
+                // Also include the exploit log tail so the failure is fully
+                // self-contained without needing adb logcat.
+                val logTail = rawLog.lines().filter { it.isNotBlank() }.takeLast(5).joinToString("\n")
+                val logDetail = logTail.takeIf(String::isNotBlank)?.let { "\nExploit log:\n$it" } ?: ""
+
+                debugLog("[DBG] Exploit process died:\n$diagBlock")
                 error(
                     app.getString(R.string.error_payload_exit, exitCode, "") +
-                    earlyDetail + logDetail
+                    "\n" + diagBlock + logDetail
                 )
             }
 
             cacheP0Offset(bootToken, rawLog)
             appendLog(app.getString(R.string.log_bootstrap_root))
-
             require(detectInstalled()) { app.getString(R.string.error_success_marker) }
         } finally {
             killProcess(process)
@@ -745,7 +754,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         shizuku: Boolean,
     ): Array<String> {
         val payloadPath = if (shizuku) SHIZUKU_PAYLOAD_PATH else payload.absolutePath
-        val helperPath = if (shizuku) SHIZUKU_HELPER_PATH else helper.absolutePath
+        val helperPath  = if (shizuku) SHIZUKU_HELPER_PATH  else helper.absolutePath
         return buildList {
             add("EXPLOIT_ATTEMPTS=$EXPLOIT_ATTEMPTS")
             add("P0_ATTEMPT_TIMEOUT_SEC=$P0_ATTEMPT_TIMEOUT_SEC")
@@ -766,7 +775,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         env: Array<String>,
     ): Process {
         return if (shizuku) {
-            val stagedHelper = shizukuStage(nativeHelperFile(), SHIZUKU_HELPER_PATH, "755")
+            val stagedHelper  = shizukuStage(nativeHelperFile(), SHIZUKU_HELPER_PATH, "755")
             val stagedPayload = shizukuStage(payload, SHIZUKU_PAYLOAD_PATH, "755")
             debugLog("[DBG] Shizuku staged: helper=${stagedHelper.absolutePath}  payload=${stagedPayload.absolutePath}")
             ShizukuController.exec(
@@ -794,8 +803,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                     environment().putAll(
                         env.associate { entry ->
                             val eq = entry.indexOf('=')
-                            if (eq >= 0) entry.substring(0, eq) to entry.substring(eq + 1)
-                            else entry to ""
+                            if (eq >= 0) entry.substring(0, eq) to entry.substring(eq + 1) else entry to ""
                         },
                     )
                 }
@@ -846,12 +854,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         if (stage.code != 0) {
             val out = stage.output.trim().takeIf(String::isNotBlank)
             debugLog("[DBG] ksud stage output: ${out ?: "(empty)"}")
-            throw IllegalStateException(
-                app.getString(
-                    R.string.error_ksu_stage,
-                    out ?: "exit code ${stage.code}",
-                )
-            )
+            throw IllegalStateException(app.getString(R.string.error_ksu_stage, out ?: "exit code ${stage.code}"))
         }
         appendLog(app.getString(R.string.log_ksu_staged))
 
@@ -860,9 +863,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         if (lateLoad.code != 0) {
             val out = lateLoad.output.trim().takeIf(String::isNotBlank)
             debugLog("[DBG] late-load output: ${out ?: "(empty)"}")
-            throw IllegalStateException(
-                app.getString(R.string.error_ksu_verify, lateLoad.code, out ?: "")
-            )
+            throw IllegalStateException(app.getString(R.string.error_ksu_verify, lateLoad.code, out ?: ""))
         }
 
         val libksudPath = app.applicationInfo.nativeLibraryDir + "/libksud.so"
@@ -871,9 +872,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         if (verify.code != 0) {
             val out = verify.output.trim().takeIf(String::isNotBlank)
             debugLog("[DBG] verify output: ${out ?: "(empty)"}")
-            throw IllegalStateException(
-                app.getString(R.string.error_ksu_verify, verify.code, out ?: "")
-            )
+            throw IllegalStateException(app.getString(R.string.error_ksu_verify, verify.code, out ?: ""))
         }
         appendLog(app.getString(R.string.log_ksu_control_verified))
     }
@@ -895,11 +894,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     private fun detectInstalled(): Boolean {
         val receipt = File(app.filesDir, INSTALL_RECEIPT)
         if (!receipt.exists()) return false
-        return try {
-            receipt.readText(Charsets.UTF_8).contains(RECEIPT_VERIFIED)
-        } catch (_: Exception) {
-            false
-        }
+        return try { receipt.readText(Charsets.UTF_8).contains(RECEIPT_VERIFIED) } catch (_: Exception) { false }
     }
 
     @Suppress("unused")
@@ -929,9 +924,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         val match = P0_OFFSET_PATTERN.find(rawLog) ?: return
         val offset = match.groupValues[1]
         app.getSharedPreferences(P0_OFFSET_PREFS, android.content.Context.MODE_PRIVATE)
-            .edit()
-            .putString(bootToken, offset)
-            .apply()
+            .edit().putString(bootToken, offset).apply()
     }
 
     // -----------------------------------------------------------------------
@@ -945,27 +938,19 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun updateHistory(transform: (InstallHistoryEntry) -> InstallHistoryEntry) {
-        val entry = activeHistoryEntry ?: return
+        val entry   = activeHistoryEntry ?: return
         val updated = transform(entry)
         activeHistoryEntry = updated
         historyStore.save(updated)
         publishHistory(updated)
     }
 
-    private fun updateHistoryLog() =
-        updateHistory { it.copy(log = mutableUiState.value.log) }
+    private fun updateHistoryLog()                     = updateHistory { it.copy(log = mutableUiState.value.log) }
+    private fun updateHistoryProfile(profileId: String) = updateHistory { it.copy(profileId = profileId) }
 
-    private fun updateHistoryProfile(profileId: String) =
-        updateHistory { it.copy(profileId = profileId) }
-
-    private fun finishHistory(result: InstallRunResult) =
-        updateHistory {
-            it.copy(
-                completedAtMillis = System.currentTimeMillis(),
-                result = result,
-                log = mutableUiState.value.log,
-            )
-        }
+    private fun finishHistory(result: InstallRunResult) = updateHistory {
+        it.copy(completedAtMillis = System.currentTimeMillis(), result = result, log = mutableUiState.value.log)
+    }
 
     private fun publishHistory(entry: InstallHistoryEntry) {
         mutableHistory.value = buildList {
@@ -981,9 +966,9 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     private fun setPhase(phase: InstallPhase, message: String, progress: Float? = null) {
         val pct = progress?.let { (it.coerceIn(0f, 1f) * 100f).roundToInt() }
         mutableUiState.value = mutableUiState.value.copy(
-            phase = phase,
+            phase         = phase,
             statusMessage = message,
-            progress = progress?.coerceIn(0f, 1f),
+            progress      = progress?.coerceIn(0f, 1f),
             progressLabel = pct?.let { "$it %" },
         )
         updateHistoryLog()
@@ -991,23 +976,14 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
 
     private fun appendLog(line: String) {
         val current = mutableUiState.value.log
-        val lines = current.lines()
-        val trimmed = if (lines.size >= MAX_LOG_LINES) {
-            lines.takeLast(MAX_LOG_LINES - 1).joinToString("\n")
-        } else {
-            current
-        }
+        val lines   = current.lines()
+        val trimmed = if (lines.size >= MAX_LOG_LINES) lines.takeLast(MAX_LOG_LINES - 1).joinToString("\n") else current
         mutableUiState.value = mutableUiState.value.copy(
             log = if (trimmed.isEmpty()) line else "$trimmed\n$line",
         )
         updateHistoryLog()
     }
 
-    /**
-     * Appends a verbose [DBG] line to the install log **only when Debug Log is
-     * enabled** in Advanced options. Also mirrors to [android.util.Log.d] so
-     * the line appears in logcat regardless of the in-app toggle.
-     */
     private fun debugLog(line: String) {
         Log.d(TAG, line)
         if (mutableDebugLog.value) appendLog(line)
@@ -1052,7 +1028,7 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                     .redirectErrorStream(true)
                     .start()
             }
-            val captured = StringBuilder()
+            val captured  = StringBuilder()
             val startedAt = SystemClock.elapsedRealtime()
             try {
                 while (process.isAlive) {
@@ -1060,17 +1036,18 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
                     require(SystemClock.elapsedRealtime() - startedAt < HELPER_TIMEOUT_MILLIS) {
                         app.getString(
                             R.string.error_helper_timeout,
-                            captured.toString().trim()
-                                .takeIf(String::isNotBlank)?.let { ": $it" } ?: "",
+                            captured.toString().trim().takeIf(String::isNotBlank)?.let { ": $it" } ?: "",
                         )
                     }
                     delay(HELPER_POLL_INTERVAL)
                 }
                 drainProcessOutput(process, captured)
                 val output = stripAnsi(captured.toString().trim())
-                val code = process.waitFor()
-                if (code != 0 && output.isNotBlank()) {
-                    debugLog("[DBG] runHelper exit=$code  output=$output")
+                val code   = process.waitFor()
+                if (code != 0) {
+                    // Collect full diagnostics and attach to the debug log.
+                    val diag = ProcessDiagnostics.collect(process, captured, ::stripAnsi)
+                    debugLog("[DBG] runHelper exit=$code\n${diag.format()}")
                 }
                 CommandResult(code, output)
             } finally {
@@ -1084,11 +1061,8 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     // Public misc
     // -----------------------------------------------------------------------
 
-    fun refresh() {
-        mutableHistory.value = historyStore.closeInterruptedRuns()
-    }
-
-    fun loadTargetCatalog() = startDiscovery()
+    fun refresh()            { mutableHistory.value = historyStore.closeInterruptedRuns() }
+    fun loadTargetCatalog()  = startDiscovery()
 
     fun deleteHistoryEntries(ids: Set<String>) {
         ids.forEach { historyStore.delete(it) }
@@ -1100,9 +1074,9 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
         installJob = null
         if (mutableUiState.value.busy) {
             mutableUiState.value = mutableUiState.value.copy(
-                phase = InstallPhase.Failed,
+                phase         = InstallPhase.Failed,
                 statusMessage = "Installation cancelled",
-                progress = null,
+                progress      = null,
                 progressLabel = null,
             )
         }
@@ -1111,9 +1085,9 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     fun clearError() {
         if (mutableUiState.value.phase == InstallPhase.Failed) {
             mutableUiState.value = mutableUiState.value.copy(
-                phase = InstallPhase.Ready,
+                phase         = InstallPhase.Ready,
                 statusMessage = "",
-                progress = null,
+                progress      = null,
                 progressLabel = null,
             )
         }
@@ -1132,41 +1106,38 @@ class InstallViewModel(application: Application) : AndroidViewModel(application)
     companion object {
         private const val TAG = "InstallViewModel"
 
-        internal const val PAYLOAD_EXPLOIT = "exploit"
+        internal const val PAYLOAD_EXPLOIT  = "exploit"
         internal const val PAYLOAD_KERNELSU = "kernelsu"
         internal const val LOCAL_PROFILE_ID = "__local__"
 
-        private const val INSTALL_RECEIPT = "install_receipt"
+        private const val INSTALL_RECEIPT   = "install_receipt"
         private const val RECEIPT_BOOT_TOKEN = "boot_token"
-        private const val RECEIPT_VERIFIED = "verified"
+        private const val RECEIPT_VERIFIED  = "verified"
 
-        private const val P0_OFFSET_PREFS = "p0_offset_cache"
-        private const val P0_OFFSET_ENV = "CVE43499_P0_OFFSET"
-        private val P0_OFFSET_PATTERN = Regex("""p0_offset=([0-9a-fx]+)""")
+        private const val P0_OFFSET_PREFS   = "p0_offset_cache"
+        private const val P0_OFFSET_ENV     = "CVE43499_P0_OFFSET"
+        private val P0_OFFSET_PATTERN       = Regex("""p0_offset=([0-9a-fx]+)""")
 
-        private const val SHIZUKU_LOG_PATH = "/data/local/tmp/ksu-exploit.log"
-        private const val SHIZUKU_HELPER_PATH = "/data/local/tmp/ksu-helper"
-        private const val SHIZUKU_PAYLOAD_PATH = "/data/local/tmp/ksu-payload"
-        private const val SHIZUKU_KSUD_PATH = "/data/local/tmp/ksud-s25u-kdp"
+        private const val SHIZUKU_LOG_PATH      = "/data/local/tmp/ksu-exploit.log"
+        private const val SHIZUKU_HELPER_PATH   = "/data/local/tmp/ksu-helper"
+        private const val SHIZUKU_PAYLOAD_PATH  = "/data/local/tmp/ksu-payload"
+        private const val SHIZUKU_KSUD_PATH     = "/data/local/tmp/ksud-s25u-kdp"
         private const val SHIZUKU_KSUD_STAGE_PATH = "/data/local/tmp/.ksud-stage"
 
-        private const val EXPLOIT_ATTEMPTS = "6"
-        private const val P0_ATTEMPT_TIMEOUT_SEC = "18"
+        private const val EXPLOIT_ATTEMPTS          = "6"
+        private const val P0_ATTEMPT_TIMEOUT_SEC    = "18"
         private const val EXPLOIT_ATTEMPT_TIMEOUT_SEC = "90"
 
-        private val EXPLOIT_STALL_MILLIS: Long = 30.seconds.inWholeMilliseconds
-        private val EXPLOIT_TOTAL_MILLIS: Long = 10.minutes.inWholeMilliseconds
-        private val HELPER_TIMEOUT_MILLIS: Long = 60.seconds.inWholeMilliseconds
-        private val LOG_POLL_INTERVAL: Long = 500.milliseconds.inWholeMilliseconds
-        private val HELPER_POLL_INTERVAL: Long = 100.milliseconds.inWholeMilliseconds
+        private val EXPLOIT_STALL_MILLIS  : Long = 30.seconds.inWholeMilliseconds
+        private val EXPLOIT_TOTAL_MILLIS  : Long = 10.minutes.inWholeMilliseconds
+        private val HELPER_TIMEOUT_MILLIS : Long = 60.seconds.inWholeMilliseconds
+        private val LOG_POLL_INTERVAL     : Long = 500.milliseconds.inWholeMilliseconds
+        private val HELPER_POLL_INTERVAL  : Long = 100.milliseconds.inWholeMilliseconds
 
-        private const val MAX_LOG_LINES = 200
-        private const val MAX_DRAIN_BYTES = 65_536
-
-        // Small step for the indeterminate pulse during exploit execution
+        private const val MAX_LOG_LINES    = 200
+        private const val MAX_DRAIN_BYTES  = 65_536
         private const val EXPLOIT_PULSE_STEP = 0.002f
     }
 }
 
-/** Thrown when the exploit log stops growing; triggers a retry in [executeExploitWithRetry]. */
 private class ExploitStallException(message: String) : Exception(message)
